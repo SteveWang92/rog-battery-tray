@@ -54,7 +54,13 @@ Armoury Crate. It is a Cargo workspace:
 - Native menus close after a click. A `WH_MSGFILTER` hook in `tray.rs` forwards a click on
   a command item as its `WM_COMMAND` and swallows it, so the menu stays open; menu items
   are therefore updated in place while it shows, and anything that replaces the menu or
-  an icon waits until it closes.
+  an icon waits until it closes. A language change rebuilds the menu after it closes and
+  reopens it from the same icon.
+- Each tray icon carries a GUID derived from the executable's path and its slot, because
+  the shell keys the "always show" setting on it. Never recreate an icon to change it:
+  give the existing one a new image, tooltip or menu, or a new icon would appear as a new
+  program in the taskbar settings. A stale registration under the same GUID is removed
+  before an icon is added.
 - HID queries run on the poller thread, never on the thread that owns the tray.
 - Settings live in `%APPDATA%\rog-battery-tray\config.toml`. The file may be edited by
   hand, so it is validated on load; an invalid file means defaults plus one toast, and the

@@ -34,33 +34,44 @@ pub enum Face {
 /// Renders `face` at the small-icon size for `dpi`. `light_taskbar` picks the digit colour
 /// of the plain state so it reads against the taskbar.
 pub fn render(face: Face, dpi: u32, light_taskbar: bool) -> Icon {
-    let (rgba, size) = rgba(face, dpi, light_taskbar);
+    let (rgba, size) = match face {
+        Face::Asleep => battery_glyph(dpi, false),
+        Face::NoDevice => battery_glyph(dpi, true),
+        Face::Level {
+            percent,
+            charging,
+            low,
+        } => digits(percent, charging, low, dpi, light_taskbar),
+    };
     Icon::from_rgba(rgba, size as u32, size as u32).expect("icon buffer matches its size")
 }
 
-/// The icon's straight-alpha RGBA pixels and its edge length.
-fn rgba(face: Face, dpi: u32, light_taskbar: bool) -> (Vec<u8>, usize) {
-    let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, dpi) } as usize;
+/// The battery percentage as digits: on a green fill while charging, an orange-red fill when
+/// low, and otherwise alone in the taskbar's text colour. Returns straight-alpha RGBA pixels
+/// and the edge length.
+fn digits(
+    percent: u8,
+    charging: bool,
+    low: bool,
+    dpi: u32,
+    light_taskbar: bool,
+) -> (Vec<u8>, usize) {
+    let size = icon_size(dpi);
     let plain = if light_taskbar { DARK_TEXT } else { WHITE };
-    let (text, fill, colour) = match face {
-        Face::Level {
-            percent, charging, ..
-        } if charging => (percent.to_string(), Some(CHARGING_FILL), WHITE),
-        Face::Level {
-            percent, low: true, ..
-        } => (percent.to_string(), Some(LOW_FILL), WHITE),
-        Face::Level { percent, .. } => (percent.to_string(), None, plain),
-        Face::Asleep => ("–".to_owned(), None, GREY),
-        Face::NoDevice => ("?".to_owned(), None, GREY),
+    let (fill, colour) = if charging {
+        (Some(CHARGING_FILL), WHITE)
+    } else if low {
+        (Some(LOW_FILL), WHITE)
+    } else {
+        (None, plain)
     };
 
     let s = size as f32;
-    let (max_w, max_h) = match (face, fill) {
-        (Face::Asleep | Face::NoDevice, _) => (s * 0.7, s * 0.75),
-        (_, Some(_)) => (s - 2.0 * (s / 16.0).ceil(), s * 0.7),
-        (_, None) => (s, s * 0.8),
+    let (max_w, max_h) = match fill {
+        Some(_) => (s - 2.0 * (s / 16.0).ceil(), s * 0.7),
+        None => (s, s * 0.8),
     };
-    let glyphs = Glyphs::fit(&text, size, max_w as usize, max_h as usize);
+    let glyphs = Glyphs::fit(&percent.to_string(), size, max_w as usize, max_h as usize);
 
     let mut rgba = vec![0u8; size * size * 4];
     let radius = s * 0.19;
@@ -84,6 +95,62 @@ fn rgba(face: Face, dpi: u32, light_taskbar: bool) -> (Vec<u8>, usize) {
             let pixel = &mut rgba[(y * size + x) * 4..][..4];
             pixel[..3].copy_from_slice(&rgb);
             pixel[3] = (alpha * 255.0).round() as u8;
+        }
+    }
+    (rgba, size)
+}
+
+fn icon_size(dpi: u32) -> usize {
+    (unsafe { GetSystemMetricsForDpi(SM_CXSMICON, dpi) }) as usize
+}
+
+/// A grey empty battery outline, for a device that is asleep or not answering; crossed by a
+/// slash when no supported device is connected at all.
+fn battery_glyph(dpi: u32, crossed: bool) -> (Vec<u8>, usize) {
+    let size = icon_size(dpi);
+    let s = size as f32;
+    let stroke = (s / 16.0).round().max(1.0);
+    let nub_w = (stroke * 1.5).round().max(1.0);
+    let margin = (s / 16.0).round();
+    let body_w = s - 2.0 * margin - nub_w;
+    let body_h = (s * 0.56).round();
+    let x0 = margin;
+    let y0 = ((s - body_h) / 2.0).round();
+    let (x1, y1) = (x0 + body_w, y0 + body_h);
+    let nub_h = (body_h * 0.4).round().max(2.0);
+    let ny0 = (y0 + (body_h - nub_h) / 2.0).round();
+    let inside =
+        |x: f32, y: f32, ax: f32, ay: f32, bx: f32, by: f32| x >= ax && x < bx && y >= ay && y < by;
+    // The slash runs corner to corner across the whole icon, one stroke wide.
+    let (dx, dy) = (s - 2.0 * margin, -(s - 2.0 * margin));
+    let length = (dx * dx + dy * dy).sqrt();
+
+    const SAMPLES: usize = 4;
+    let mut rgba = vec![0u8; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let mut hits = 0;
+            for sy in 0..SAMPLES {
+                for sx in 0..SAMPLES {
+                    let fx = x as f32 + (sx as f32 + 0.5) / SAMPLES as f32;
+                    let fy = y as f32 + (sy as f32 + 0.5) / SAMPLES as f32;
+                    let outline = inside(fx, fy, x0, y0, x1, y1)
+                        && !inside(fx, fy, x0 + stroke, y0 + stroke, x1 - stroke, y1 - stroke);
+                    let nub = inside(fx, fy, x1, ny0, x1 + nub_w, ny0 + nub_h);
+                    let slash = crossed && {
+                        let (px, py) = (fx - margin, fy - (s - margin));
+                        let along = (px * dx + py * dy) / length;
+                        let across = (px * dy - py * dx).abs() / length;
+                        across <= stroke * 0.75 && (0.0..=length).contains(&along)
+                    };
+                    if outline || nub || slash {
+                        hits += 1;
+                    }
+                }
+            }
+            let pixel = &mut rgba[(y * size + x) * 4..][..4];
+            pixel[..3].copy_from_slice(&GREY);
+            pixel[3] = (hits as f32 / (SAMPLES * SAMPLES) as f32 * 255.0).round() as u8;
         }
     }
     (rgba, size)

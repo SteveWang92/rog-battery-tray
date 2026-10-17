@@ -11,6 +11,8 @@ on `main`, with the matching section below as its notes.
 
 - `--once` prints the battery of each ROG Azoth found over OMNI, its receiver or USB.
 - Tray icon per device showing battery digits, coloured when low or charging.
+- Grey battery icon while a device sleeps, crossed out when none is found.
+- Tray icons keep their "always show" setting across restarts and language changes.
 - Tooltip with device, battery, charging state and last update time.
 - Right-click menu for refresh, low-battery threshold, refresh interval and merged icon.
 - The menu stays open while changing settings until clicked outside.

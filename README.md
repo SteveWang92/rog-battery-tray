@@ -5,7 +5,8 @@ Armoury Crate and runs as a single portable `.exe`.
 
 - The tray icon shows the battery percentage as digits, drawn for the taskbar's scale and
   theme. A low battery shows on an orange-red fill, charging on a green fill, a sleeping
-  or unresponsive device as a grey `–`, and no supported device as a grey `?`.
+  or unresponsive device as a grey empty battery, and no supported device as a grey battery
+  with a slash through it.
 - Hovering an icon shows the device, its battery, whether it is charging and when it was
   last read.
 - Every setting is in the right-click menu: refresh now, the low-battery threshold, the

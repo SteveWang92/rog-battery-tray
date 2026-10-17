@@ -10,6 +10,7 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - `--once` prints the battery of each ROG Azoth found over OMNI, its receiver or USB.
+- Other battery-powered ROG keyboards and mice, untested, as listed in the README.
 - Tray icon per device showing battery digits, coloured when low or charging.
 - A sleeping device keeps showing its last battery reading, greyed out.
 - Grey crossed-out battery icon when no supported device is found.

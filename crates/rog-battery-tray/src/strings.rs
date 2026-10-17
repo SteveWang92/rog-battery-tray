@@ -48,6 +48,8 @@ pub struct Strings {
     pub supported: &'static str,
     pub no_response: &'static str,
     pub asleep: &'static str,
+    asleep_last: &'static str,
+    row_asleep: &'static str,
     battery: &'static str,
     charging: &'static str,
     not_charging: &'static str,
@@ -109,6 +111,16 @@ impl Strings {
         }
     }
 
+    /// The tooltip's line for a device asleep since its last reading at `time`.
+    pub fn asleep_line(&self, percent: u8, time: &str) -> String {
+        fill(self.asleep_last, &[&percent.to_string(), time])
+    }
+
+    /// The menu row's right-hand column for a device asleep since its last reading.
+    pub fn row_asleep(&self, percent: u8) -> String {
+        fill(self.row_asleep, &[&percent.to_string()])
+    }
+
     pub fn updated_at(&self, time: &str) -> String {
         fill(self.updated, &[time])
     }
@@ -146,6 +158,8 @@ static EN: Strings = Strings {
     supported: "Supported devices…",
     no_response: "No response",
     asleep: "Asleep or not responding",
+    asleep_last: "Asleep · last read {}% at {}",
+    row_asleep: "{}% asleep",
     battery: "Battery",
     charging: "charging",
     not_charging: "not charging",
@@ -180,6 +194,8 @@ static ZH: Strings = Strings {
     supported: "查看支持的设备…",
     no_response: "未响应",
     asleep: "休眠或未响应",
+    asleep_last: "休眠中 · 上次电量 {}%（{}）",
+    row_asleep: "{}% 休眠",
     battery: "电量",
     charging: "充电中",
     not_charging: "未充电",

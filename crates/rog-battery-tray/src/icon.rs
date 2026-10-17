@@ -26,13 +26,15 @@ pub enum Face {
         percent: u8,
         charging: bool,
         low: bool,
+        /// The last reading of a device now asleep, drawn in grey unless it is low.
+        stale: bool,
     },
     Asleep,
     NoDevice,
 }
 
-/// Renders `face` at the small-icon size for `dpi`. `light_taskbar` picks the digit colour
-/// of the plain state so it reads against the taskbar.
+/// Renders `face` at the small-icon size for `dpi`. `light_taskbar` picks the colour of
+/// plain digits so they read against the taskbar.
 pub fn render(face: Face, dpi: u32, light_taskbar: bool) -> Icon {
     let (rgba, size) = match face {
         Face::Asleep => battery_glyph(dpi, false),
@@ -41,23 +43,26 @@ pub fn render(face: Face, dpi: u32, light_taskbar: bool) -> Icon {
             percent,
             charging,
             low,
-        } => digits(percent, charging, low, dpi, light_taskbar),
+            stale,
+        } => {
+            let plain = if stale {
+                GREY
+            } else if light_taskbar {
+                DARK_TEXT
+            } else {
+                WHITE
+            };
+            digits(percent, charging, low, dpi, plain)
+        }
     };
     Icon::from_rgba(rgba, size as u32, size as u32).expect("icon buffer matches its size")
 }
 
 /// The battery percentage as digits: on a green fill while charging, an orange-red fill when
-/// low, and otherwise alone in the taskbar's text colour. Returns straight-alpha RGBA pixels
-/// and the edge length.
-fn digits(
-    percent: u8,
-    charging: bool,
-    low: bool,
-    dpi: u32,
-    light_taskbar: bool,
-) -> (Vec<u8>, usize) {
+/// low, and otherwise alone in `plain`. Returns straight-alpha RGBA pixels and the edge
+/// length.
+fn digits(percent: u8, charging: bool, low: bool, dpi: u32, plain: [u8; 3]) -> (Vec<u8>, usize) {
     let size = icon_size(dpi);
-    let plain = if light_taskbar { DARK_TEXT } else { WHITE };
     let (fill, colour) = if charging {
         (Some(CHARGING_FILL), WHITE)
     } else if low {
@@ -104,8 +109,8 @@ fn icon_size(dpi: u32) -> usize {
     (unsafe { GetSystemMetricsForDpi(SM_CXSMICON, dpi) }) as usize
 }
 
-/// A grey empty battery outline, for a device that is asleep or not answering; crossed by a
-/// slash when no supported device is connected at all.
+/// A grey empty battery outline, for a device asleep before any reading; crossed by a slash
+/// when no supported device is connected at all.
 fn battery_glyph(dpi: u32, crossed: bool) -> (Vec<u8>, usize) {
     let size = icon_size(dpi);
     let s = size as f32;

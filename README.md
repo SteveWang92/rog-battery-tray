@@ -4,8 +4,9 @@ A lightweight Windows tray battery monitor for ASUS ROG wireless peripherals. It
 Armoury Crate and runs as a single portable `.exe`.
 
 - The tray icon shows the battery percentage as digits, drawn for the taskbar's scale and
-  theme. A low battery shows on an orange-red fill, charging on a green fill, a sleeping
-  or unresponsive device as a grey empty battery, and no supported device as a grey battery
+  theme. A low battery shows on an orange-red fill and charging on a green fill. A device
+  that falls asleep keeps its last reading in grey, or shows a grey empty battery if it
+  has not been read yet. With no supported device connected, the icon is a grey battery
   with a slash through it.
 - Hovering an icon shows the device, its battery, whether it is charging and when it was
   last read.

@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
+
 use rog_battery::{Connection, HidApi, Reading};
 use tray_icon::menu::{
     CheckMenuItem, ContextMenu, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
@@ -53,6 +55,22 @@ thread_local! {
     /// The tray, shared by the message loop and the menu hook, which both run on this thread
     /// but never at the same time.
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
+}
+
+/// What is shown for one device.
+#[derive(Clone, Copy)]
+enum View {
+    Live {
+        percent: u8,
+        charging: bool,
+    },
+    /// The device is asleep; its battery barely moves then, so its last reading stands.
+    Asleep {
+        percent: u8,
+        read_at: DateTime<Local>,
+    },
+    /// Asleep with nothing read since the tray started.
+    Unknown,
 }
 
 /// Which one-shot toasts a device can still raise.
@@ -124,6 +142,8 @@ struct Tray {
     menu: Option<MenuItems>,
     look: Look,
     alerts: HashMap<(&'static str, Connection), Alerts>,
+    /// Each device's last battery reading and when it was taken.
+    last_read: HashMap<(&'static str, Connection), (u8, DateTime<Local>)>,
     /// Set while a menu is showing: the menu and the icons it belongs to cannot be replaced
     /// then, so such changes wait for it to close.
     menu_open: bool,
@@ -180,6 +200,7 @@ pub fn run(api: HidApi) {
         menu: None,
         look,
         alerts: HashMap::new(),
+        last_read: HashMap::new(),
         menu_open: false,
         rebuild_pending: false,
         reopen: false,
@@ -367,6 +388,12 @@ impl Tray {
         }
         if let Some(snapshot) = latest {
             self.raise_alerts(&snapshot);
+            for device in &snapshot.devices {
+                if let Reading::Battery { percent, .. } = device.reading {
+                    self.last_read
+                        .insert((device.name, device.connection), (percent, snapshot.at));
+                }
+            }
             self.snapshot = Some(snapshot);
             self.refresh();
         }
@@ -476,22 +503,27 @@ impl Tray {
         let faces: Vec<(Face, String)> = if snapshot.devices.is_empty() {
             vec![(Face::NoDevice, strings.no_device.to_owned())]
         } else if self.settings.merged_icon {
-            let lowest = snapshot
-                .devices
+            let all: Vec<(&DeviceStatus, View)> =
+                snapshot.devices.iter().map(|d| (d, self.view(d))).collect();
+            let lowest = all
                 .iter()
-                .filter_map(|d| match d.reading {
-                    Reading::Battery { percent, .. } => Some((percent, d)),
-                    Reading::Asleep => None,
+                .filter_map(|&(_, view)| match view {
+                    View::Live { percent, .. } | View::Asleep { percent, .. } => {
+                        Some((percent, view))
+                    }
+                    View::Unknown => None,
                 })
                 .min_by_key(|(percent, _)| *percent);
-            let face = lowest.map_or(Face::Asleep, |(_, d)| self.face(d.reading));
-            let all: Vec<&DeviceStatus> = snapshot.devices.iter().collect();
+            let face = lowest.map_or(Face::Asleep, |(_, view)| self.face(view));
             vec![(face, tooltip(strings, &all, &time))]
         } else {
             snapshot
                 .devices
                 .iter()
-                .map(|d| (self.face(d.reading), tooltip(strings, &[d], &time)))
+                .map(|d| {
+                    let view = self.view(d);
+                    (self.face(view), tooltip(strings, &[(d, view)], &time))
+                })
                 .collect()
         };
 
@@ -558,7 +590,7 @@ impl Tray {
         let t = self.strings();
         let s = &self.settings;
         for (row, device) in items.rows.iter().zip(&snapshot.devices) {
-            row.set_text(row_text(t, device));
+            row.set_text(row_text(t, device, self.view(device)));
         }
         for (p, item) in &items.low {
             item.set_checked(s.low_threshold == *p);
@@ -579,14 +611,32 @@ impl Tray {
         }
     }
 
-    fn face(&self, reading: Reading) -> Face {
-        match reading {
-            Reading::Battery { percent, charging } => Face::Level {
+    fn view(&self, device: &DeviceStatus) -> View {
+        match device.reading {
+            Reading::Battery { percent, charging } => View::Live { percent, charging },
+            Reading::Asleep => match self.last_read.get(&(device.name, device.connection)) {
+                Some(&(percent, read_at)) => View::Asleep { percent, read_at },
+                None => View::Unknown,
+            },
+        }
+    }
+
+    fn face(&self, view: View) -> Face {
+        let low = |percent| self.settings.low_threshold().is_some_and(|t| percent <= t);
+        match view {
+            View::Live { percent, charging } => Face::Level {
                 percent,
                 charging,
-                low: self.settings.low_threshold().is_some_and(|t| percent <= t),
+                low: low(percent),
+                stale: false,
             },
-            Reading::Asleep => Face::Asleep,
+            View::Asleep { percent, .. } => Face::Level {
+                percent,
+                charging: false,
+                low: low(percent),
+                stale: true,
+            },
+            View::Unknown => Face::Asleep,
         }
     }
 
@@ -699,21 +749,25 @@ fn device_label(strings: &Strings, device: &DeviceStatus) -> String {
     )
 }
 
-fn row_text(strings: &Strings, device: &DeviceStatus) -> String {
-    let right = match device.reading {
-        Reading::Battery { percent, charging } => strings.row_status(percent, charging),
-        Reading::Asleep => strings.no_response.to_owned(),
+fn row_text(strings: &Strings, device: &DeviceStatus, view: View) -> String {
+    let right = match view {
+        View::Live { percent, charging } => strings.row_status(percent, charging),
+        View::Asleep { percent, .. } => strings.row_asleep(percent),
+        View::Unknown => strings.no_response.to_owned(),
     };
     format!("{}\t{right}", device_label(strings, device))
 }
 
-fn tooltip(strings: &Strings, devices: &[&DeviceStatus], time: &str) -> String {
+fn tooltip(strings: &Strings, devices: &[(&DeviceStatus, View)], time: &str) -> String {
     let lines: Vec<String> = devices
         .iter()
-        .map(|d| {
-            let status = match d.reading {
-                Reading::Battery { percent, charging } => strings.battery_line(percent, charging),
-                Reading::Asleep => strings.asleep.to_owned(),
+        .map(|&(d, view)| {
+            let status = match view {
+                View::Live { percent, charging } => strings.battery_line(percent, charging),
+                View::Asleep { percent, read_at } => {
+                    strings.asleep_line(percent, &read_at.format("%H:%M").to_string())
+                }
+                View::Unknown => strings.asleep.to_owned(),
             };
             format!("{}\n{status}", device_label(strings, d))
         })

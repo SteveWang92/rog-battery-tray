@@ -18,7 +18,7 @@ const SUB_PROBE: u8 = 0x00;
 const SUB_BATTERY: u8 = 0x01;
 
 /// How a device reaches the computer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Connection {
     OmniReceiver,
     Receiver,

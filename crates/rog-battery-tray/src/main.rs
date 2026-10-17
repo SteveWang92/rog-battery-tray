@@ -1,8 +1,11 @@
 // A GUI-subsystem binary, so launching the tray opens no console window.
 #![windows_subsystem = "windows"]
 
+mod config;
 mod icon;
 mod poller;
+mod strings;
+mod system;
 mod theme;
 mod tray;
 

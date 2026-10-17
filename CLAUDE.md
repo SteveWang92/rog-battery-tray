@@ -49,6 +49,13 @@ Armoury Crate. It is a Cargo workspace:
   menu and Windows toasts. There is no main window or settings window.
 - Icons are rendered at runtime for the taskbar's DPI and theme; no icon image files.
 - HID queries run on the poller thread, never on the thread that owns the tray.
+- Settings live in `%APPDATA%\rog-battery-tray\config.toml`. The file may be edited by
+  hand, so it is validated on load; an invalid file means defaults plus one toast, and the
+  file is left alone until a setting changes.
+- Autostart is the per-user `Run` registry value, the single source of truth for that
+  setting; it is not duplicated in the config file. A value pointing at another copy's
+  path counts as off.
+- Every user-facing string lives in `strings.rs`, in English and Simplified Chinese.
 - The battery log is diagnostic: off by default, switched from the menu, written to
   `%LOCALAPPDATA%\rog-battery-tray\battery.log`.
 

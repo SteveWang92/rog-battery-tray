@@ -1,6 +1,7 @@
-//! The tray application: one icon per device (or one merged icon), its tooltip, and the
-//! right-click menu that holds every setting.
+//! The tray application: one icon per device (or one merged icon), its tooltip, the
+//! right-click menu that holds every setting, and the battery toasts.
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -16,8 +17,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostThreadMessageW, SW_SHOWNORMAL, SetTimer, TranslateMessage, WM_APP, WM_TIMER,
 };
 
+use crate::config::{self, Loaded, Settings};
 use crate::icon::{self, Face};
 use crate::poller::{self, Command, DeviceStatus, Snapshot};
+use crate::strings::{Language, Strings};
+use crate::system;
 use crate::theme::{self, Look};
 
 const PROJECT_URL: &str = "https://github.com/SteveWang92/rog-battery-tray";
@@ -26,25 +30,15 @@ const SUPPORTED_URL: &str = "https://github.com/SteveWang92/rog-battery-tray#sup
 /// How often the taskbar's theme and DPI are checked for a change.
 const LOOK_CHECK_MS: u32 = 2000;
 
-const THRESHOLDS: [Option<u8>; 4] = [None, Some(10), Some(20), Some(30)];
+const THRESHOLDS: [u8; 4] = [0, 10, 20, 30];
 const INTERVALS: [u64; 3] = [30, 60, 300];
 
-struct Settings {
-    low_threshold: Option<u8>,
-    interval: Duration,
-    merged: bool,
-    logging: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Settings {
-        Settings {
-            low_threshold: Some(20),
-            interval: Duration::from_secs(60),
-            merged: false,
-            logging: false,
-        }
-    }
+/// Which one-shot toasts a device can still raise.
+struct Alerts {
+    /// Cleared by the low-battery toast; set again once the device is seen charging.
+    low_armed: bool,
+    /// Set while the device charges below 100%; cleared by the full-charge toast.
+    full_pending: bool,
 }
 
 struct Tray {
@@ -53,12 +47,28 @@ struct Tray {
     snapshot: Option<Snapshot>,
     icons: Vec<TrayIcon>,
     look: Look,
+    alerts: HashMap<(&'static str, Connection), Alerts>,
 }
 
 pub fn run(api: HidApi) {
+    system::register_toasts();
+    let settings = match config::load() {
+        Loaded::Saved(settings) => settings,
+        Loaded::FirstRun => {
+            let settings = Settings::default();
+            system::set_autostart(true);
+            config::save(&settings);
+            settings
+        }
+        // The file is left as it is until a setting is changed from the menu.
+        Loaded::Invalid => {
+            let settings = Settings::default();
+            system::toast("rog-battery-tray", settings.language.strings().bad_config);
+            settings
+        }
+    };
     let look = Look::current();
     theme::apply_menu_theme(look.light);
-    let settings = Settings::default();
 
     let main_thread = unsafe { GetCurrentThreadId() };
     let mut msg: MSG = unsafe { std::mem::zeroed() };
@@ -68,8 +78,8 @@ pub fn run(api: HidApi) {
     let (snapshots, inbox) = mpsc::channel();
     let commands = poller::spawn(
         api,
-        settings.interval,
-        settings.logging,
+        Duration::from_secs(settings.interval_secs),
+        settings.battery_log,
         snapshots,
         move || unsafe {
             PostThreadMessageW(main_thread, WM_APP, 0, 0);
@@ -81,6 +91,7 @@ pub fn run(api: HidApi) {
         snapshot: None,
         icons: Vec::new(),
         look,
+        alerts: HashMap::new(),
     };
     unsafe { SetTimer(std::ptr::null_mut(), 0, LOOK_CHECK_MS, None) };
 
@@ -93,6 +104,7 @@ pub fn run(api: HidApi) {
         // wake-up and the look-check timer, is a chance to drain them.
         let mut changed = false;
         while let Ok(snapshot) = inbox.try_recv() {
+            tray.raise_alerts(&snapshot);
             tray.snapshot = Some(snapshot);
             changed = true;
         }
@@ -119,49 +131,94 @@ pub fn run(api: HidApi) {
 }
 
 impl Tray {
+    fn strings(&self) -> &'static Strings {
+        self.settings.language.strings()
+    }
+
     /// Applies a menu click; returns whether the tray must be redrawn.
     fn on_menu(&mut self, id: &str) -> bool {
         let (kind, value) = id.split_once(':').unwrap_or((id, ""));
+        let s = &mut self.settings;
         match kind {
             "refresh" => {
                 let _ = self.commands.send(Command::Refresh);
-                false
+                return false;
             }
-            "low" => {
-                self.settings.low_threshold = value.parse().ok();
-                true
-            }
+            "low" => s.low_threshold = value.parse().expect("low ids carry a percentage"),
             "interval" => {
-                let seconds = value.parse().expect("interval ids carry seconds");
-                self.settings.interval = Duration::from_secs(seconds);
-                let _ = self
-                    .commands
-                    .send(Command::Interval(self.settings.interval));
-                true
+                s.interval_secs = value.parse().expect("interval ids carry seconds");
+                let interval = Duration::from_secs(s.interval_secs);
+                let _ = self.commands.send(Command::Interval(interval));
             }
-            "icons" => {
-                self.settings.merged = value == "merged";
-                true
+            "icons" => s.merged_icon = value == "merged",
+            "full" => s.full_alert = !s.full_alert,
+            "autostart" => {
+                system::set_autostart(!system::autostart_enabled());
+                return true;
+            }
+            "language" => {
+                s.language = match value {
+                    "en" => Language::English,
+                    "zh-CN" => Language::Chinese,
+                    _ => Language::System,
+                }
             }
             "log" => {
-                self.settings.logging = !self.settings.logging;
-                let _ = self.commands.send(Command::Logging(self.settings.logging));
-                true
+                s.battery_log = !s.battery_log;
+                let _ = self.commands.send(Command::Logging(s.battery_log));
             }
             "about" => {
                 open_url(PROJECT_URL);
-                false
+                return false;
             }
             "supported" => {
                 open_url(SUPPORTED_URL);
-                false
+                return false;
             }
             "quit" => {
                 self.icons.clear();
                 unsafe { PostQuitMessage(0) };
-                false
+                return false;
             }
-            _ => false,
+            _ => return false,
+        }
+        config::save(&self.settings);
+        true
+    }
+
+    fn raise_alerts(&mut self, snapshot: &Snapshot) {
+        let strings = self.strings();
+        for device in &snapshot.devices {
+            let Reading::Battery { percent, charging } = device.reading else {
+                continue;
+            };
+            let alerts = self
+                .alerts
+                .entry((device.name, device.connection))
+                .or_insert(Alerts {
+                    low_armed: true,
+                    full_pending: false,
+                });
+            if charging {
+                alerts.low_armed = true;
+            } else if alerts.low_armed
+                && self.settings.low_threshold().is_some_and(|t| percent <= t)
+            {
+                let (title, body) = strings.low_toast(device.name, percent);
+                system::toast(&title, &body);
+                alerts.low_armed = false;
+            }
+            // A device may stop reporting "charging" once full, so reaching 100% after
+            // charging below it is what counts.
+            if charging && percent < 100 {
+                alerts.full_pending = true;
+            } else if percent == 100 && alerts.full_pending {
+                if self.settings.full_alert {
+                    let (title, body) = strings.full_toast(device.name);
+                    system::toast(&title, &body);
+                }
+                alerts.full_pending = false;
+            }
         }
     }
 
@@ -169,22 +226,23 @@ impl Tray {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
+        let strings = self.strings();
         let menu = self.menu(snapshot);
-        let time = snapshot.at.format("%H:%M");
+        let time = snapshot.at.format("%H:%M").to_string();
 
         // Each icon: what it shows and the devices its tooltip lists.
         let faces: Vec<(Face, Vec<&DeviceStatus>)> = if snapshot.devices.is_empty() {
             vec![(Face::NoDevice, Vec::new())]
-        } else if self.settings.merged {
+        } else if self.settings.merged_icon {
             let lowest = snapshot
                 .devices
                 .iter()
-                .filter(|d| matches!(d.reading, Reading::Battery { .. }))
-                .min_by_key(|d| match d.reading {
-                    Reading::Battery { percent, .. } => percent,
-                    Reading::Asleep => u8::MAX,
-                });
-            let face = lowest.map_or(Face::Asleep, |d| self.face(d.reading));
+                .filter_map(|d| match d.reading {
+                    Reading::Battery { percent, .. } => Some((percent, d)),
+                    Reading::Asleep => None,
+                })
+                .min_by_key(|(percent, _)| *percent);
+            let face = lowest.map_or(Face::Asleep, |(_, d)| self.face(d.reading));
             vec![(face, snapshot.devices.iter().collect())]
         } else {
             snapshot
@@ -200,13 +258,21 @@ impl Tray {
         for (i, (face, devices)) in faces.into_iter().enumerate() {
             let image = icon::render(face, self.look.dpi, self.look.light);
             let tooltip = if devices.is_empty() {
-                "未找到 ROG 设备".to_owned()
+                strings.no_device.to_owned()
             } else {
                 let lines: Vec<String> = devices
                     .iter()
-                    .map(|d| format!("{}\n{}", device_label(d), status_line(d.reading)))
+                    .map(|d| {
+                        let status = match d.reading {
+                            Reading::Battery { percent, charging } => {
+                                strings.battery_line(percent, charging)
+                            }
+                            Reading::Asleep => strings.asleep.to_owned(),
+                        };
+                        format!("{}\n{status}", device_label(strings, d))
+                    })
                     .collect();
-                format!("{}\n{time} 更新", lines.join("\n"))
+                format!("{}\n{}", lines.join("\n"), strings.updated_at(&time))
             };
             match self.icons.get(i) {
                 Some(tray) => {
@@ -224,7 +290,7 @@ impl Tray {
                     match built {
                         Ok(tray) => self.icons.push(tray),
                         // The shell refuses icons until the taskbar exists, as at sign-in;
-                        // the next snapshot tries again.
+                        // the look-check timer tries again.
                         Err(_) => {
                             self.icons.clear();
                             return;
@@ -240,21 +306,22 @@ impl Tray {
             Reading::Battery { percent, charging } => Face::Level {
                 percent,
                 charging,
-                low: self.settings.low_threshold.is_some_and(|t| percent <= t),
+                low: self.settings.low_threshold().is_some_and(|t| percent <= t),
             },
             Reading::Asleep => Face::Asleep,
         }
     }
 
     fn menu(&self, snapshot: &Snapshot) -> Menu {
+        let t = self.strings();
         let menu = Menu::new();
-        let quit = MenuItem::with_id("quit", "退出", true, None);
+        let quit = MenuItem::with_id("quit", t.quit, true, None);
         if snapshot.devices.is_empty() {
             append(
                 &menu,
                 &[
-                    &MenuItem::new("未找到 ROG 设备", false, None),
-                    &MenuItem::with_id("supported", "查看支持的设备…", true, None),
+                    &MenuItem::new(t.no_device, false, None),
+                    &MenuItem::with_id("supported", t.supported, true, None),
                     &PredefinedMenuItem::separator(),
                     &quit,
                 ],
@@ -264,14 +331,10 @@ impl Tray {
 
         for (i, device) in snapshot.devices.iter().enumerate() {
             let right = match device.reading {
-                Reading::Battery {
-                    percent,
-                    charging: true,
-                } => format!("{percent}% 充电中"),
-                Reading::Battery { percent, .. } => format!("{percent}%"),
-                Reading::Asleep => "未响应".to_owned(),
+                Reading::Battery { percent, charging } => t.row_status(percent, charging),
+                Reading::Asleep => t.no_response.to_owned(),
             };
-            let row = format!("{}\t{right}", device_label(device));
+            let row = format!("{}\t{right}", device_label(t, device));
             append(
                 &menu,
                 &[&MenuItem::with_id(format!("device:{i}"), row, true, None)],
@@ -284,33 +347,42 @@ impl Tray {
         };
         let low: Vec<CheckMenuItem> = THRESHOLDS
             .iter()
-            .map(|&t| {
-                let text = t.map_or("关闭".to_owned(), |t| format!("{t}%"));
-                let id = format!("low:{}", t.map_or(String::new(), |t| t.to_string()));
-                radio(id, &text, s.low_threshold == t)
+            .map(|&p| {
+                let text = if p == 0 {
+                    t.off.to_owned()
+                } else {
+                    format!("{p}%")
+                };
+                radio(format!("low:{p}"), &text, s.low_threshold == p)
             })
             .collect();
         let intervals: Vec<CheckMenuItem> = INTERVALS
             .iter()
             .map(|&secs| {
-                let text = if secs < 60 {
-                    format!("{secs} 秒")
-                } else {
-                    format!("{} 分钟", secs / 60)
-                };
-                radio(
-                    format!("interval:{secs}"),
-                    &text,
-                    s.interval.as_secs() == secs,
-                )
+                let text = t.interval_label(secs);
+                radio(format!("interval:{secs}"), &text, s.interval_secs == secs)
             })
             .collect();
         let icons = [
-            radio("icons:each".to_owned(), "每个设备一个", !s.merged),
+            radio("icons:each".to_owned(), t.icons_each, !s.merged_icon),
+            radio("icons:merged".to_owned(), t.icons_merged, s.merged_icon),
+        ];
+        // Language names stay in their own language so either can be found.
+        let languages = [
             radio(
-                "icons:merged".to_owned(),
-                "合并成一个（显示最低）",
-                s.merged,
+                "language:system".to_owned(),
+                t.follow_system,
+                s.language == Language::System,
+            ),
+            radio(
+                "language:en".to_owned(),
+                "English",
+                s.language == Language::English,
+            ),
+            radio(
+                "language:zh-CN".to_owned(),
+                "简体中文",
+                s.language == Language::Chinese,
             ),
         ];
         let version = env!("CARGO_PKG_VERSION");
@@ -319,19 +391,23 @@ impl Tray {
             &menu,
             &[
                 &PredefinedMenuItem::separator(),
-                &MenuItem::with_id("refresh", "立即刷新", true, None),
+                &MenuItem::with_id("refresh", t.refresh, true, None),
                 &PredefinedMenuItem::separator(),
-                &submenu("低电量提醒", &low),
-                &submenu("刷新间隔", &intervals),
-                &submenu("托盘图标", &icons),
-                &CheckMenuItem::with_id("log", "记录电量日志", true, s.logging, None),
-                &PredefinedMenuItem::separator(),
-                &MenuItem::with_id(
-                    "about",
-                    format!("关于 rog-battery-tray\tv{version}"),
+                &submenu(t.low_alert, &low),
+                &submenu(t.interval, &intervals),
+                &submenu(t.icons, &icons),
+                &CheckMenuItem::with_id("full", t.full_alert, true, s.full_alert, None),
+                &CheckMenuItem::with_id(
+                    "autostart",
+                    t.autostart,
                     true,
+                    system::autostart_enabled(),
                     None,
                 ),
+                &submenu(t.language, &languages),
+                &CheckMenuItem::with_id("log", t.battery_log, true, s.battery_log, None),
+                &PredefinedMenuItem::separator(),
+                &MenuItem::with_id("about", format!("{}\tv{version}", t.about), true, None),
                 &quit,
             ],
         );
@@ -348,23 +424,12 @@ fn submenu(text: &str, items: &[CheckMenuItem]) -> Submenu {
     Submenu::with_items(text, true, &items).expect("menu items are new")
 }
 
-fn device_label(device: &DeviceStatus) -> String {
-    let connection = match device.connection {
-        Connection::OmniReceiver => "OMNI",
-        Connection::Receiver => "接收器",
-        Connection::Wired => "有线",
-    };
-    format!("{} ({connection})", device.name)
-}
-
-fn status_line(reading: Reading) -> String {
-    match reading {
-        Reading::Battery { percent, charging } => {
-            let state = if charging { "充电中" } else { "未充电" };
-            format!("电量 {percent}% · {state}")
-        }
-        Reading::Asleep => "休眠或未响应".to_owned(),
-    }
+fn device_label(strings: &Strings, device: &DeviceStatus) -> String {
+    format!(
+        "{} ({})",
+        device.name,
+        strings.connection(device.connection)
+    )
 }
 
 fn open_url(url: &str) {

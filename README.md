@@ -9,8 +9,12 @@ Armoury Crate and runs as a single portable `.exe`.
 - Hovering an icon shows the device, its battery, whether it is charging and when it was
   last read.
 - Every setting is in the right-click menu: refresh now, the low-battery threshold, the
-  refresh interval, one icon per device or one merged icon showing the lowest level, and an
-  optional battery log.
+  refresh interval, one icon per device or one merged icon showing the lowest level, a
+  full-charge alert, starting with Windows, the language (English or Simplified Chinese)
+  and an optional battery log.
+- A Windows notification appears once when a device drops to the low-battery threshold,
+  and again only after it has been charged. The full-charge notification is off by
+  default.
 - It only ever sends battery queries; it never changes a device setting.
 
 ## Supported devices
@@ -31,8 +35,13 @@ From a terminal, `rog-battery-tray.exe --once` prints every detected device's ba
 exits. PowerShell and Command Prompt do not wait for a windowed program, so pipe it there
 to see the output: `rog-battery-tray.exe --once | more`.
 
-The battery log, when switched on from the menu, is written to
-`%LOCALAPPDATA%\rog-battery-tray\battery.log`.
+Settings are saved to `%APPDATA%\rog-battery-tray\config.toml`. The battery log, when
+switched on from the menu, is written to `%LOCALAPPDATA%\rog-battery-tray\battery.log`.
+
+On first run the program adds itself to the current user's startup programs
+(`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`); switching off "Start with Windows"
+removes that entry. To show notifications under its own name it registers
+`HKCU\Software\Classes\AppUserModelId\rog-battery-tray`. Nothing else is written.
 
 ## Building
 

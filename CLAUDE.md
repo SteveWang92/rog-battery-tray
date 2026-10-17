@@ -45,8 +45,13 @@ Armoury Crate. It is a Cargo workspace:
 
 ## Tray rules
 
-- Battery is shown only through the tray icon, its native tooltip, the native right-click
-  menu and Windows toasts. There is no main window or settings window.
+- Battery is shown only through the tray icon, the card a left click on it shows, the
+  native right-click menu and Windows toasts. There is no main window or settings window,
+  and no native tooltip: the shell shows it only after a hover delay no program can
+  shorten, and cuts it at 128 characters.
+- The card (`popup.rs`) is a GDI-drawn popup that closes when it loses activation. Its
+  window procedure runs inside Win32 calls the tray makes while holding its own state, so
+  the card keeps its state apart from the tray's.
 - Icons are drawn in code, never stored as image files: tray icons at runtime for the
   taskbar's DPI and theme (`icon.rs`), the application icon from `app_icon.rs`, which
   `build.rs` embeds in the executable with its version information and the tray writes out

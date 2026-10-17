@@ -92,7 +92,7 @@ impl Strings {
         }
     }
 
-    /// The tooltip's battery line.
+    /// The card's battery line.
     pub fn battery_line(&self, percent: u8, charging: bool) -> String {
         let state = if charging {
             self.charging
@@ -111,7 +111,7 @@ impl Strings {
         }
     }
 
-    /// The tooltip's line for a device asleep since its last reading at `time`.
+    /// The card's line for a device asleep since its last reading at `time`.
     pub fn asleep_line(&self, percent: u8, time: &str) -> String {
         fill(self.asleep_last, &[&percent.to_string(), time])
     }

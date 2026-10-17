@@ -1,5 +1,5 @@
-//! The tray application: one icon per device (or one merged icon), its tooltip, the
-//! right-click menu that holds every setting, and the battery toasts.
+//! The tray application: one icon per device (or one merged icon), the card a left click
+//! shows, the right-click menu that holds every setting, and the battery toasts.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,7 +12,9 @@ use rog_battery::{Connection, HidApi, Reading};
 use tray_icon::menu::{
     CheckMenuItem, ContextMenu, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
 };
-use tray_icon::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconId};
+use tray_icon::{
+    MouseButton, MouseButtonState, Rect, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconId,
+};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
@@ -30,6 +32,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::config::{self, Loaded, Settings};
 use crate::icon::{self, Face};
 use crate::poller::{self, Command, DeviceStatus, Snapshot};
+use crate::popup::{self, Anchor, Card};
 use crate::strings::{Language, Strings};
 use crate::system;
 use crate::theme::{self, Look};
@@ -139,6 +142,8 @@ struct Tray {
     inbox: Receiver<Snapshot>,
     snapshot: Option<Snapshot>,
     icons: Vec<TrayIcon>,
+    /// What each icon's card shows, by icon position.
+    cards: Vec<Card>,
     menu: Option<MenuItems>,
     look: Look,
     alerts: HashMap<(&'static str, Connection), Alerts>,
@@ -197,6 +202,7 @@ pub fn run(api: HidApi) {
         inbox,
         snapshot: None,
         icons: Vec::new(),
+        cards: Vec::new(),
         menu: None,
         look,
         alerts: HashMap::new(),
@@ -327,13 +333,26 @@ impl Tray {
 
     fn on_message(&mut self, msg: &MSG) {
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click {
-                id,
-                button: MouseButton::Right,
-                ..
-            } = event
-            {
-                self.last_clicked = Some(id);
+            match event {
+                TrayIconEvent::Click {
+                    id,
+                    button: MouseButton::Right,
+                    ..
+                } => self.last_clicked = Some(id),
+                TrayIconEvent::Click {
+                    id,
+                    rect,
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => {
+                    let slot = self.icons.iter().position(|icon| *icon.id() == id);
+                    if let Some((slot, card)) = slot.and_then(|s| Some((s, self.cards.get(s)?))) {
+                        let look = self.look;
+                        popup::toggle(slot, card.clone(), anchor(rect), look.dpi, look.light);
+                    }
+                }
+                _ => {}
             }
         }
         self.take_snapshots();
@@ -491,7 +510,7 @@ impl Tray {
         }
     }
 
-    /// Brings the icons, tooltips and menu up to date with the snapshot and settings.
+    /// Brings the icons, cards and menu up to date with the snapshot and settings.
     fn refresh(&mut self) {
         let Some(snapshot) = &self.snapshot else {
             return;
@@ -499,9 +518,13 @@ impl Tray {
         let strings = self.strings();
         let time = snapshot.at.format("%H:%M").to_string();
 
-        // Each icon: what it shows and its tooltip.
-        let faces: Vec<(Face, String)> = if snapshot.devices.is_empty() {
-            vec![(Face::NoDevice, strings.no_device.to_owned())]
+        // Each icon: what it shows and its card.
+        let faces: Vec<(Face, Card)> = if snapshot.devices.is_empty() {
+            let card = Card {
+                sections: vec![(strings.no_device.to_owned(), String::new())],
+                footer: String::new(),
+            };
+            vec![(Face::NoDevice, card)]
         } else if self.settings.merged_icon {
             let all: Vec<(&DeviceStatus, View)> =
                 snapshot.devices.iter().map(|d| (d, self.view(d))).collect();
@@ -515,14 +538,14 @@ impl Tray {
                 })
                 .min_by_key(|(percent, _)| *percent);
             let face = lowest.map_or(Face::Asleep, |(_, view)| self.face(view));
-            vec![(face, tooltip(strings, &all, &time))]
+            vec![(face, card(strings, &all, &time))]
         } else {
             snapshot
                 .devices
                 .iter()
                 .map(|d| {
                     let view = self.view(d);
-                    (self.face(view), tooltip(strings, &[(d, view)], &time))
+                    (self.face(view), card(strings, &[(d, view)], &time))
                 })
                 .collect()
         };
@@ -551,11 +574,10 @@ impl Tray {
         if !self.menu_open {
             self.icons.truncate(faces.len());
         }
-        for (slot, (face, tip)) in faces.iter().enumerate() {
+        for (slot, (face, _)) in faces.iter().enumerate() {
             let image = icon::render(*face, self.look.dpi, self.look.light);
             if let Some(tray) = self.icons.get(slot) {
                 let _ = tray.set_icon(Some(image));
-                let _ = tray.set_tooltip(Some(tip));
                 continue;
             }
             if self.menu_open {
@@ -564,7 +586,6 @@ impl Tray {
             let menu = &self.menu.as_ref().expect("built above").menu;
             let built = TrayIconBuilder::new()
                 .with_icon(image)
-                .with_tooltip(tip)
                 .with_menu(Box::new(menu.clone()))
                 .with_menu_on_left_click(false)
                 .build();
@@ -575,6 +596,10 @@ impl Tray {
                 Err(_) => break,
             }
         }
+        self.cards = faces.into_iter().map(|(_, card)| card).collect();
+        let icons = &self.icons;
+        let at = |slot: usize| icons.get(slot)?.rect().map(anchor);
+        popup::update(&self.cards, at, self.look.dpi, self.look.light);
         self.sync_menu();
     }
 
@@ -758,8 +783,8 @@ fn row_text(strings: &Strings, device: &DeviceStatus, view: View) -> String {
     format!("{}\t{right}", device_label(strings, device))
 }
 
-fn tooltip(strings: &Strings, devices: &[(&DeviceStatus, View)], time: &str) -> String {
-    let lines: Vec<String> = devices
+fn card(strings: &Strings, devices: &[(&DeviceStatus, View)], time: &str) -> Card {
+    let sections = devices
         .iter()
         .map(|&(d, view)| {
             let status = match view {
@@ -769,10 +794,22 @@ fn tooltip(strings: &Strings, devices: &[(&DeviceStatus, View)], time: &str) -> 
                 }
                 View::Unknown => strings.asleep.to_owned(),
             };
-            format!("{}\n{status}", device_label(strings, d))
+            (device_label(strings, d), status)
         })
         .collect();
-    format!("{}\n{}", lines.join("\n"), strings.updated_at(time))
+    Card {
+        sections,
+        footer: strings.updated_at(time),
+    }
+}
+
+fn anchor(rect: Rect) -> Anchor {
+    Anchor {
+        x: rect.position.x as i32,
+        y: rect.position.y as i32,
+        width: rect.size.width as i32,
+        height: rect.size.height as i32,
+    }
 }
 
 /// Whether `hwnd` is a popup menu window, whose class is always "#32768".

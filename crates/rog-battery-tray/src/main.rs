@@ -5,6 +5,7 @@ mod app_icon;
 mod config;
 mod icon;
 mod poller;
+mod popup;
 mod strings;
 mod system;
 mod theme;

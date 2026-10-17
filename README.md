@@ -8,8 +8,8 @@ needs no Armoury Crate and runs as a single portable `.exe`.
   that falls asleep keeps its last reading in grey, or shows a grey empty battery if it
   has not been read yet. With no supported device connected, the icon is a grey battery
   with a slash through it.
-- Hovering an icon shows the device, its battery, whether it is charging and when it was
-  last read.
+- Clicking an icon shows the device, its battery, whether it is charging and when it was
+  last read; a click anywhere else closes it.
 - Every setting is in the right-click menu: refresh now, the low-battery threshold, the
   refresh interval, one icon per device or one merged icon showing the lowest level, a
   full-charge alert, starting with Windows, the language (English or Simplified Chinese)

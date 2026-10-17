@@ -12,7 +12,7 @@ Armoury Crate. It is a Cargo workspace:
 | Crate | Role |
 | --- | --- |
 | `crates/rog-battery` | Device discovery and battery queries over HID. No UI, so other applications can reuse it. |
-| `crates/rog-battery-tray` | The tray application, plus the `--once` command-line mode that prints every detected device's battery and exits. |
+| `crates/rog-battery-tray` | The tray application, plus two command-line modes: `--once` prints every detected device's battery and exits; `--watch <seconds>` queries at that interval and appends each result to `%LOCALAPPDATA%\rog-battery-tray\watch.log`. |
 
 ## Project exceptions
 

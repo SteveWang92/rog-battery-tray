@@ -10,5 +10,6 @@ on `main`, with the matching section below as its notes.
 ### Added
 
 - `--once` prints the battery of each ROG Azoth found over OMNI, its receiver or USB.
+- `--watch <seconds>` logs each device's battery at that interval to a log file.
 
 [Unreleased]: https://github.com/SteveWang92/rog-battery-tray/commits/dev

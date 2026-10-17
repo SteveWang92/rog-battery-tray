@@ -43,6 +43,16 @@ Armoury Crate. It is a Cargo workspace:
 - Documents and comments describe the current state only; history belongs in commits and
   `CHANGELOG.md`.
 
+## Releases
+
+- Work lands on `dev`; `main` only receives releases.
+- Releases are cut with [changedeck](https://github.com/SteveWang92/changedeck)
+  (`prep`, `reversion`, `ship`), configured by `changedeck.json`, which lists every file
+  that carries the version. A new crate's `Cargo.toml` and `Cargo.lock` entry go there.
+- Record each user-facing change under `## [Unreleased]` in `CHANGELOG.md` in the same
+  commit that makes it.
+- Only the maintainer releases.
+
 ## Checks
 
 Run before committing; CI runs the same on pull requests:

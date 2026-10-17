@@ -17,6 +17,7 @@
 !/.gitignore
 !/Cargo.lock
 !/Cargo.toml
+!/changedeck.json
 !/CHANGELOG.md
 !/CLAUDE.md
 !/rustfmt.toml

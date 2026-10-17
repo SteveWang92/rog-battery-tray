@@ -1,0 +1,10 @@
+{
+  "appName": "rog-battery-tray",
+  "repo": "SteveWang92/rog-battery-tray",
+  "versionFiles": [
+    { "path": "crates/rog-battery-tray/Cargo.toml", "type": "cargo-toml" },
+    { "path": "crates/rog-battery/Cargo.toml", "type": "cargo-toml" },
+    { "path": "Cargo.lock", "type": "cargo-lock", "package": "rog-battery-tray" },
+    { "path": "Cargo.lock", "type": "cargo-lock", "package": "rog-battery" }
+  ]
+}

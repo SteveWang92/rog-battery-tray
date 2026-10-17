@@ -7,4 +7,8 @@ on `main`, with the matching section below as its notes.
 
 ## [Unreleased]
 
+### Added
+
+- `--once` prints the battery of each ROG Azoth found over OMNI, its receiver or USB.
+
 [Unreleased]: https://github.com/SteveWang92/rog-battery-tray/commits/dev

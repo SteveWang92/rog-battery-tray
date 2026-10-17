@@ -8,24 +8,22 @@ use std::time::Duration;
 
 use rog_battery::{Connection, HidApi, Reading};
 use tray_icon::menu::{
-    CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+    CheckMenuItem, ContextMenu, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
 };
 use tray_icon::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconId};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::Shell::{
-    NIF_GUID, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW, ShellExecuteW,
-};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, EndMenu, EnumThreadWindows, GUITHREADINFO, GetClassNameW,
     GetGUIThreadInfo, GetMenuItemID, GetMenuState, GetMessageW, HMENU, MF_BYPOSITION, MF_DISABLED,
     MF_GRAYED, MF_POPUP, MF_SEPARATOR, MSG, MSGF_MENU, MenuItemFromPoint, PM_NOREMOVE,
-    PeekMessageW, PostQuitMessage, PostThreadMessageW, SW_SHOWNORMAL, SendMessageW, SetTimer,
-    SetWindowsHookExW, TranslateMessage, WH_MSGFILTER, WM_APP, WM_COMMAND, WM_LBUTTONUP,
-    WM_NCLBUTTONUP, WM_TIMER, WindowFromPoint,
+    PeekMessageW, PostMessageW, PostQuitMessage, PostThreadMessageW, SW_SHOWNORMAL, SendMessageW,
+    SetForegroundWindow, SetTimer, SetWindowsHookExW, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TrackPopupMenu, TranslateMessage, WH_MSGFILTER, WM_APP, WM_COMMAND, WM_LBUTTONUP,
+    WM_NCLBUTTONUP, WM_NULL, WM_TIMER, WindowFromPoint,
 };
-use windows_sys::core::GUID;
 
 use crate::config::{self, Loaded, Settings};
 use crate::icon::{self, Face};
@@ -63,6 +61,34 @@ struct Alerts {
     low_armed: bool,
     /// Set while the device charges below 100%; cleared by the full-charge toast.
     full_pending: bool,
+}
+
+/// A closed menu to show again.
+struct Reopen {
+    owner: HWND,
+    menu: HMENU,
+    x: i32,
+    y: i32,
+}
+
+impl Reopen {
+    /// Shows the menu the way the shell's own tray menus open, and blocks until it closes.
+    fn show(self) {
+        unsafe {
+            // The owner must be in the foreground for a click outside to close the menu.
+            SetForegroundWindow(self.owner);
+            TrackPopupMenu(
+                self.menu,
+                TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+                self.x,
+                self.y,
+                0,
+                self.owner,
+                std::ptr::null(),
+            );
+            PostMessageW(self.owner, WM_NULL, 0, 0);
+        }
+    }
 }
 
 /// What a menu click asks of the open menu.
@@ -106,6 +132,8 @@ struct Tray {
     reopen: bool,
     /// The icon last right-clicked, which a reopened menu belongs to.
     last_clicked: Option<TrayIconId>,
+    /// The window that owns the open menu and receives its commands.
+    menu_owner: Option<HWND>,
 }
 
 pub fn run(api: HidApi) {
@@ -156,6 +184,7 @@ pub fn run(api: HidApi) {
         rebuild_pending: false,
         reopen: false,
         last_clicked: None,
+        menu_owner: None,
     }));
     unsafe {
         SetTimer(std::ptr::null_mut(), 0, LOOK_CHECK_MS, None);
@@ -179,9 +208,10 @@ pub fn run(api: HidApi) {
             tray.on_message(&msg);
             tray.take_reopen()
         });
-        // Shown outside the borrow: the menu hook needs the tray while the menu is open.
-        if let Some(icon) = reopen {
-            icon.show_menu();
+        // Shown here, outside every borrow: the menu hook needs the tray, and the tray its
+        // icons, while the menu is open.
+        if let Some(reopen) = reopen {
+            reopen.show();
         }
     }
     TRAY.take();
@@ -206,7 +236,11 @@ unsafe extern "system" fn menu_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     tray.take_snapshots();
                     false
                 }
-                WM_LBUTTONUP | WM_NCLBUTTONUP if unsafe { click_in_menu(msg) } => {
+                WM_LBUTTONUP | WM_NCLBUTTONUP => {
+                    let Some(owner) = (unsafe { click_in_menu(msg) }) else {
+                        return false;
+                    };
+                    tray.menu_owner = Some(owner);
                     let mut close = false;
                     while let Ok(event) = MenuEvent::receiver().try_recv() {
                         match tray.on_menu(event.id.as_ref()) {
@@ -233,36 +267,36 @@ unsafe extern "system" fn menu_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
-/// Sends the command of the item under a click in a menu window to the menu's owner. `false`
-/// leaves the click to the menu: it missed an item, or hit a submenu, separator or disabled
-/// row.
-unsafe fn click_in_menu(msg: &MSG) -> bool {
+/// Sends the command of the item under a click in a menu window to the menu's owner, and
+/// returns that owner. `None` leaves the click to the menu: it missed an item, or hit a
+/// submenu, separator or disabled row.
+unsafe fn click_in_menu(msg: &MSG) -> Option<HWND> {
     // While a menu is open the mouse is captured, so the message names the capturing window
     // rather than the menu or submenu under the cursor.
     let window = unsafe { WindowFromPoint(msg.pt) };
     if !is_menu_window(window) {
-        return false;
+        return None;
     }
     let menu = unsafe { SendMessageW(window, MN_GETHMENU, 0, 0) } as HMENU;
     if menu.is_null() {
-        return false;
+        return None;
     }
     let position = unsafe { MenuItemFromPoint(window, menu, msg.pt) };
     if position < 0 {
-        return false;
+        return None;
     }
     let state = unsafe { GetMenuState(menu, position as u32, MF_BYPOSITION) };
     if state & (MF_POPUP | MF_SEPARATOR | MF_DISABLED | MF_GRAYED) != 0 {
-        return false;
+        return None;
     }
     let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
     info.cbSize = size_of::<GUITHREADINFO>() as u32;
     if unsafe { GetGUIThreadInfo(GetCurrentThreadId(), &mut info) } == 0 {
-        return false;
+        return None;
     }
     let id = unsafe { GetMenuItemID(menu, position) };
     unsafe { SendMessageW(info.hwndMenuOwner, WM_COMMAND, id as usize, 0) };
-    true
+    Some(info.hwndMenuOwner)
 }
 
 impl Tray {
@@ -303,19 +337,27 @@ impl Tray {
         }
     }
 
-    /// The icon whose menu should open again, once a reopen was asked for and the rebuilt
-    /// menu is in place.
-    fn take_reopen(&mut self) -> Option<TrayIcon> {
+    /// Where the rebuilt menu opens again, once a reopen was asked for and it is in place:
+    /// above the icon last right-clicked, as the shell first showed it.
+    fn take_reopen(&mut self) -> Option<Reopen> {
         if !self.reopen || self.rebuild_pending {
             return None;
         }
         self.reopen = false;
+        let owner = self.menu_owner?;
         let clicked = self.last_clicked.as_ref();
-        self.icons
+        let icon = self
+            .icons
             .iter()
             .find(|icon| Some(icon.id()) == clicked)
-            .or(self.icons.first())
-            .cloned()
+            .or(self.icons.first())?;
+        let rect = icon.rect()?;
+        Some(Reopen {
+            owner,
+            menu: self.menu.as_ref()?.menu.hpopupmenu() as HMENU,
+            x: rect.position.x as i32,
+            y: rect.position.y as i32,
+        })
     }
 
     fn take_snapshots(&mut self) {
@@ -458,7 +500,9 @@ impl Tray {
                 .menu
                 .as_ref()
                 .is_none_or(|m| m.devices != snapshot.devices.len());
-        // Neither the menu nor the set of icons can change under an open menu.
+        // Neither the menu nor the set of icons can change under an open menu. Icons are
+        // never replaced either: the shell knows an icon by its window and number, and
+        // remembers its "always show" setting under them, so a new icon is a new entry.
         let reshape = needs_menu || self.icons.len() != faces.len();
         if self.menu_open && reshape {
             self.rebuild_pending = true;
@@ -486,14 +530,11 @@ impl Tray {
                 break;
             }
             let menu = &self.menu.as_ref().expect("built above").menu;
-            let guid = slot_guid(slot);
-            forget_icon(guid);
             let built = TrayIconBuilder::new()
                 .with_icon(image)
                 .with_tooltip(tip)
                 .with_menu(Box::new(menu.clone()))
                 .with_menu_on_left_click(false)
-                .with_guid(guid)
                 .build();
             match built {
                 Ok(tray) => self.icons.push(tray),
@@ -639,31 +680,6 @@ impl Tray {
         );
         items
     }
-}
-
-/// The shell identifies a GUID icon by its GUID and remembers its visibility under it. A
-/// GUID is bound to the executable's path, so it is derived from that path and the icon's
-/// slot: a copy elsewhere gets its own icons instead of failing to add them.
-fn slot_guid(slot: usize) -> u128 {
-    let exe = std::env::current_exe().unwrap_or_default();
-    let key = format!("{}|{slot}", exe.display().to_string().to_lowercase());
-    // FNV-1a, run twice with different offsets for 128 stable bits.
-    let fnv = |offset: u64| {
-        key.bytes().fold(offset, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
-        })
-    };
-    (u128::from(fnv(0xCBF2_9CE4_8422_2325)) << 64) | u128::from(fnv(0x6C62_272E_07BB_0142))
-}
-
-/// Removes an icon left registered under `guid` by a copy that ended without removing it,
-/// such as one ended from Task Manager; the shell refuses to add a GUID it still holds.
-fn forget_icon(guid: u128) {
-    let mut data: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
-    data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-    data.uFlags = NIF_GUID;
-    data.guidItem = GUID::from_u128(guid);
-    unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
 }
 
 fn append(menu: &Menu, items: &[&dyn IsMenuItem]) {

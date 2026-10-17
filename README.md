@@ -47,7 +47,8 @@ On first run the program adds itself to the current user's startup programs
 (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`); switching off "Start with Windows"
 removes that entry. To show notifications under its own name it registers
 `HKCU\Software\Classes\AppUserModelId\rog-battery-tray` and keeps the notification icon in
-`%LOCALAPPDATA%\rog-battery-tray\icon.ico`. Nothing else is written.
+`%LOCALAPPDATA%\rog-battery-tray\icon.ico`. If the program ever fails, the error is recorded
+in `crash.log` in the same folder. Nothing else is written.
 
 ## Building
 

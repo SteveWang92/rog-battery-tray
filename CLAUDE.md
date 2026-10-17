@@ -56,11 +56,17 @@ Armoury Crate. It is a Cargo workspace:
   are therefore updated in place while it shows, and anything that replaces the menu or
   an icon waits until it closes. A language change rebuilds the menu after it closes and
   reopens it from the same icon.
-- Each tray icon carries a GUID derived from the executable's path and its slot, because
-  the shell keys the "always show" setting on it. Never recreate an icon to change it:
-  give the existing one a new image, tooltip or menu, or a new icon would appear as a new
-  program in the taskbar settings. A stale registration under the same GUID is removed
-  before an icon is added.
+- The shell knows a tray icon by the executable's path and the icon's number, and keeps
+  its "always show" setting under them. Icons are numbered in creation order, so as long
+  as none is recreated, every run numbers them the same. Never recreate an icon to change
+  it: give the existing one a new image, tooltip or menu, or it appears as a new program in
+  the taskbar settings. Icons carry no GUID: the shell binds a GUID to one executable
+  path and refuses it while a stale registration holds it.
+- A menu shown again by the tray itself goes through `TrackPopupMenu` directly, never
+  `TrayIcon::show_menu`, which holds the icon borrowed for as long as the menu is open;
+  the menu hook updating that icon would then panic and end the process.
+- A panic is written to `%LOCALAPPDATA%\rog-battery-tray\crash.log`; the tray has no
+  console to show it.
 - HID queries run on the poller thread, never on the thread that owns the tray.
 - Settings live in `%APPDATA%\rog-battery-tray\config.toml`. The file may be edited by
   hand, so it is validated on load; an invalid file means defaults plus one toast, and the

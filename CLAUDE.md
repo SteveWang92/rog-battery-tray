@@ -12,7 +12,7 @@ Armoury Crate. It is a Cargo workspace:
 | Crate | Role |
 | --- | --- |
 | `crates/rog-battery` | Device discovery and battery queries over HID. No UI, so other applications can reuse it. |
-| `crates/rog-battery-tray` | The tray application, plus two command-line modes: `--once` prints every detected device's battery and exits; `--watch <seconds>` queries at that interval and appends each result to `%LOCALAPPDATA%\rog-battery-tray\watch.log`. |
+| `crates/rog-battery-tray` | The tray application. With `--once` it prints every detected device's battery and exits instead. |
 
 ## Project exceptions
 
@@ -42,6 +42,15 @@ Armoury Crate. It is a Cargo workspace:
   personal to one contributor.
 - Documents and comments describe the current state only; history belongs in commits and
   `CHANGELOG.md`.
+
+## Tray rules
+
+- Battery is shown only through the tray icon, its native tooltip, the native right-click
+  menu and Windows toasts. There is no main window or settings window.
+- Icons are rendered at runtime for the taskbar's DPI and theme; no icon image files.
+- HID queries run on the poller thread, never on the thread that owns the tray.
+- The battery log is diagnostic: off by default, switched from the menu, written to
+  `%LOCALAPPDATA%\rog-battery-tray\battery.log`.
 
 ## Releases
 

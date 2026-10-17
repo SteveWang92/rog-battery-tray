@@ -20,6 +20,8 @@
 !/changedeck.json
 !/CHANGELOG.md
 !/CLAUDE.md
+!/LICENSE
+!/README.md
 !/rustfmt.toml
 
 # --- Never track, anywhere in the tree ---

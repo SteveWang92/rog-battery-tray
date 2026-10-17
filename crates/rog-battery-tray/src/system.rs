@@ -1,10 +1,13 @@
 //! Per-user Windows integration: starting with Windows and showing toasts.
 
+use std::fs;
 use std::path::PathBuf;
 
 use tauri_winrt_notification::Toast;
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+
+use crate::app_icon;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "rog-battery-tray";
@@ -41,11 +44,28 @@ pub fn set_autostart(on: bool) {
     }
 }
 
+/// Registers the toast identity, with the application icon written beside the battery log
+/// so the notification header can show it.
 pub fn register_toasts() {
     let path = format!(r"Software\Classes\AppUserModelId\{APP_ID}");
-    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(path) {
-        let _ = key.set_value("DisplayName", &"rog-battery-tray");
+    let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(path) else {
+        return;
+    };
+    let _ = key.set_value("DisplayName", &"rog-battery-tray");
+    if let Some(icon) = write_icon() {
+        let _ = key.set_value("IconUri", &icon.display().to_string());
     }
+}
+
+fn write_icon() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("rog-battery-tray");
+    let path = dir.join("icon.ico");
+    let ico = app_icon::ico();
+    if fs::read(&path).ok().as_deref() != Some(ico.as_slice()) {
+        fs::create_dir_all(&dir).ok()?;
+        fs::write(&path, ico).ok()?;
+    }
+    Some(path)
 }
 
 pub fn toast(title: &str, body: &str) {

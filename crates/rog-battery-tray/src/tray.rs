@@ -1,8 +1,9 @@
 //! The tray application: one icon per device (or one merged icon), its tooltip, the
 //! right-click menu that holds every setting, and the battery toasts.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use rog_battery::{Connection, HidApi, Reading};
@@ -10,11 +11,16 @@ use tray_icon::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
 };
 use tray_icon::{TrayIcon, TrayIconBuilder};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostQuitMessage,
-    PostThreadMessageW, SW_SHOWNORMAL, SetTimer, TranslateMessage, WM_APP, WM_TIMER,
+    CallNextHookEx, DispatchMessageW, EndMenu, EnumThreadWindows, GUITHREADINFO, GetClassNameW,
+    GetGUIThreadInfo, GetMenuItemID, GetMenuState, GetMessageW, HMENU, MF_BYPOSITION, MF_DISABLED,
+    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MSG, MSGF_MENU, MenuItemFromPoint, PM_NOREMOVE,
+    PeekMessageW, PostQuitMessage, PostThreadMessageW, SW_SHOWNORMAL, SendMessageW, SetTimer,
+    SetWindowsHookExW, TranslateMessage, WH_MSGFILTER, WM_APP, WM_COMMAND, WM_LBUTTONUP, WM_TIMER,
 };
 
 use crate::config::{self, Loaded, Settings};
@@ -32,6 +38,20 @@ const LOOK_CHECK_MS: u32 = 2000;
 
 const THRESHOLDS: [u8; 4] = [0, 10, 20, 30];
 const INTERVALS: [u64; 3] = [30, 60, 300];
+const LANGUAGES: [(Language, &str); 3] = [
+    (Language::System, "system"),
+    (Language::English, "en"),
+    (Language::Chinese, "zh-CN"),
+];
+
+/// `MN_GETHMENU`: asks a menu window for the menu it shows.
+const MN_GETHMENU: u32 = 0x01E1;
+
+thread_local! {
+    /// The tray, shared by the message loop and the menu hook, which both run on this thread
+    /// but never at the same time.
+    static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
+}
 
 /// Which one-shot toasts a device can still raise.
 struct Alerts {
@@ -41,13 +61,41 @@ struct Alerts {
     full_pending: bool,
 }
 
+/// What a menu click asks of the open menu.
+enum Outcome {
+    Stay,
+    Close,
+}
+
+/// The menu and the items whose check marks or text change while it exists.
+struct MenuItems {
+    menu: Menu,
+    /// The device count it was built for; 0 is the no-device menu.
+    devices: usize,
+    rows: Vec<MenuItem>,
+    low: Vec<(u8, CheckMenuItem)>,
+    intervals: Vec<(u64, CheckMenuItem)>,
+    icons_each: CheckMenuItem,
+    icons_merged: CheckMenuItem,
+    full: CheckMenuItem,
+    autostart: CheckMenuItem,
+    languages: Vec<(Language, CheckMenuItem)>,
+    log: CheckMenuItem,
+}
+
 struct Tray {
     settings: Settings,
     commands: mpsc::Sender<Command>,
+    inbox: Receiver<Snapshot>,
     snapshot: Option<Snapshot>,
     icons: Vec<TrayIcon>,
+    menu: Option<MenuItems>,
     look: Look,
     alerts: HashMap<(&'static str, Connection), Alerts>,
+    /// Set while a menu is showing: the menu and the icons it belongs to cannot be replaced
+    /// then, so such changes wait for it to close.
+    menu_open: bool,
+    rebuild_pending: bool,
 }
 
 pub fn run(api: HidApi) {
@@ -85,49 +133,106 @@ pub fn run(api: HidApi) {
             PostThreadMessageW(main_thread, WM_APP, 0, 0);
         },
     );
-    let mut tray = Tray {
+    TRAY.set(Some(Tray {
         settings,
         commands,
+        inbox,
         snapshot: None,
         icons: Vec::new(),
+        menu: None,
         look,
         alerts: HashMap::new(),
-    };
-    unsafe { SetTimer(std::ptr::null_mut(), 0, LOOK_CHECK_MS, None) };
+        menu_open: false,
+        rebuild_pending: false,
+    }));
+    unsafe {
+        SetTimer(std::ptr::null_mut(), 0, LOOK_CHECK_MS, None);
+        SetWindowsHookExW(
+            WH_MSGFILTER,
+            Some(menu_hook),
+            std::ptr::null_mut(),
+            main_thread,
+        );
+    }
 
     while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
         unsafe {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        // Snapshots and menu clicks arrive on channels; any message, including the poller's
-        // wake-up and the look-check timer, is a chance to drain them.
-        let mut changed = false;
-        while let Ok(snapshot) = inbox.try_recv() {
-            tray.raise_alerts(&snapshot);
-            tray.snapshot = Some(snapshot);
-            changed = true;
-        }
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            changed |= tray.on_menu(event.id.as_ref());
-        }
-        if msg.message == WM_TIMER && msg.hwnd.is_null() {
-            let look = Look::current();
-            if look != tray.look {
-                if look.light != tray.look.light {
-                    theme::apply_menu_theme(look.light);
+        // The dispatch above returns only once any menu it showed has closed.
+        TRAY.with_borrow_mut(|tray| {
+            let tray = tray.as_mut().expect("the tray is set before the loop");
+            tray.menu_open = false;
+            tray.on_message(&msg);
+        });
+    }
+    TRAY.take();
+}
+
+/// Runs inside the menu's own message loop. A click on a command item is handed to the menu's
+/// owner as the `WM_COMMAND` it would have become, then swallowed, so the menu stays open
+/// for the next change instead of closing after every click.
+unsafe extern "system" fn menu_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == MSGF_MENU as i32 {
+        let msg = unsafe { &*(lparam as *const MSG) };
+        let swallowed = TRAY.with(|cell| {
+            let Ok(mut tray) = cell.try_borrow_mut() else {
+                return false;
+            };
+            let Some(tray) = tray.as_mut() else {
+                return false;
+            };
+            tray.menu_open = true;
+            match msg.message {
+                WM_APP => {
+                    tray.take_snapshots();
+                    false
                 }
-                tray.look = look;
-                changed = true;
+                WM_LBUTTONUP if unsafe { click_in_menu(msg) } => {
+                    let mut close = false;
+                    while let Ok(event) = MenuEvent::receiver().try_recv() {
+                        close |= matches!(tray.on_menu(event.id.as_ref()), Outcome::Close);
+                    }
+                    if close {
+                        unsafe { EndMenu() };
+                    }
+                    true
+                }
+                _ => false,
             }
-            // Icons the shell refused earlier are retried here rather than a whole poll
-            // interval later.
-            changed |= tray.icons.is_empty();
-        }
-        if changed {
-            tray.redraw();
+        });
+        if swallowed {
+            return 1;
         }
     }
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+}
+
+/// Sends the command of the item under a click in a menu window to the menu's owner. `false`
+/// leaves the click to the menu: it missed an item, or hit a submenu, separator or disabled
+/// row.
+unsafe fn click_in_menu(msg: &MSG) -> bool {
+    let menu = unsafe { SendMessageW(msg.hwnd, MN_GETHMENU, 0, 0) } as HMENU;
+    if menu.is_null() {
+        return false;
+    }
+    let position = unsafe { MenuItemFromPoint(std::ptr::null_mut(), menu, msg.pt) };
+    if position < 0 {
+        return false;
+    }
+    let state = unsafe { GetMenuState(menu, position as u32, MF_BYPOSITION) };
+    if state & (MF_POPUP | MF_SEPARATOR | MF_DISABLED | MF_GRAYED) != 0 {
+        return false;
+    }
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if unsafe { GetGUIThreadInfo(GetCurrentThreadId(), &mut info) } == 0 {
+        return false;
+    }
+    let id = unsafe { GetMenuItemID(menu, position) };
+    unsafe { SendMessageW(info.hwndMenuOwner, WM_COMMAND, id as usize, 0) };
+    true
 }
 
 impl Tray {
@@ -135,14 +240,49 @@ impl Tray {
         self.settings.language.strings()
     }
 
-    /// Applies a menu click; returns whether the tray must be redrawn.
-    fn on_menu(&mut self, id: &str) -> bool {
+    fn on_message(&mut self, msg: &MSG) {
+        self.take_snapshots();
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            self.on_menu(event.id.as_ref());
+        }
+        if msg.message == WM_TIMER && msg.hwnd.is_null() {
+            let look = Look::current();
+            if look != self.look {
+                if look.light != self.look.light {
+                    theme::apply_menu_theme(look.light);
+                }
+                self.look = look;
+                self.refresh();
+            } else if self.icons.is_empty() || self.rebuild_pending {
+                // Icons the shell refused earlier are retried here rather than a whole poll
+                // interval later.
+                self.refresh();
+            }
+        } else if self.rebuild_pending {
+            self.refresh();
+        }
+    }
+
+    fn take_snapshots(&mut self) {
+        let mut latest = None;
+        while let Ok(snapshot) = self.inbox.try_recv() {
+            latest = Some(snapshot);
+        }
+        if let Some(snapshot) = latest {
+            self.raise_alerts(&snapshot);
+            self.snapshot = Some(snapshot);
+            self.refresh();
+        }
+    }
+
+    /// Applies a menu click.
+    fn on_menu(&mut self, id: &str) -> Outcome {
         let (kind, value) = id.split_once(':').unwrap_or((id, ""));
         let s = &mut self.settings;
         match kind {
             "refresh" => {
                 let _ = self.commands.send(Command::Refresh);
-                return false;
+                return Outcome::Stay;
             }
             "low" => s.low_threshold = value.parse().expect("low ids carry a percentage"),
             "interval" => {
@@ -154,14 +294,18 @@ impl Tray {
             "full" => s.full_alert = !s.full_alert,
             "autostart" => {
                 system::set_autostart(!system::autostart_enabled());
-                return true;
+                self.refresh();
+                return Outcome::Stay;
             }
             "language" => {
-                s.language = match value {
-                    "en" => Language::English,
-                    "zh-CN" => Language::Chinese,
-                    _ => Language::System,
-                }
+                s.language = LANGUAGES
+                    .iter()
+                    .find(|(_, code)| *code == value)
+                    .map_or(Language::System, |(language, _)| *language);
+                config::save(&self.settings);
+                // Every label changes, so the menu is rebuilt once it has closed.
+                self.rebuild_pending = true;
+                return Outcome::Close;
             }
             "log" => {
                 s.battery_log = !s.battery_log;
@@ -169,21 +313,21 @@ impl Tray {
             }
             "about" => {
                 open_url(PROJECT_URL);
-                return false;
+                return Outcome::Close;
             }
             "supported" => {
                 open_url(SUPPORTED_URL);
-                return false;
+                return Outcome::Close;
             }
             "quit" => {
-                self.icons.clear();
                 unsafe { PostQuitMessage(0) };
-                return false;
+                return Outcome::Close;
             }
-            _ => return false,
+            _ => return Outcome::Stay,
         }
         config::save(&self.settings);
-        true
+        self.refresh();
+        Outcome::Stay
     }
 
     fn raise_alerts(&mut self, snapshot: &Snapshot) {
@@ -222,17 +366,17 @@ impl Tray {
         }
     }
 
-    fn redraw(&mut self) {
+    /// Brings the icons, tooltips and menu up to date with the snapshot and settings.
+    fn refresh(&mut self) {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
         let strings = self.strings();
-        let menu = self.menu(snapshot);
         let time = snapshot.at.format("%H:%M").to_string();
 
-        // Each icon: what it shows and the devices its tooltip lists.
-        let faces: Vec<(Face, Vec<&DeviceStatus>)> = if snapshot.devices.is_empty() {
-            vec![(Face::NoDevice, Vec::new())]
+        // Each icon: what it shows and its tooltip.
+        let faces: Vec<(Face, String)> = if snapshot.devices.is_empty() {
+            vec![(Face::NoDevice, strings.no_device.to_owned())]
         } else if self.settings.merged_icon {
             let lowest = snapshot
                 .devices
@@ -243,61 +387,94 @@ impl Tray {
                 })
                 .min_by_key(|(percent, _)| *percent);
             let face = lowest.map_or(Face::Asleep, |(_, d)| self.face(d.reading));
-            vec![(face, snapshot.devices.iter().collect())]
+            let all: Vec<&DeviceStatus> = snapshot.devices.iter().collect();
+            vec![(face, tooltip(strings, &all, &time))]
         } else {
             snapshot
                 .devices
                 .iter()
-                .map(|d| (self.face(d.reading), vec![d]))
+                .map(|d| (self.face(d.reading), tooltip(strings, &[d], &time)))
                 .collect()
         };
 
-        if self.icons.len() != faces.len() {
-            self.icons.clear();
-        }
-        for (i, (face, devices)) in faces.into_iter().enumerate() {
-            let image = icon::render(face, self.look.dpi, self.look.light);
-            let tooltip = if devices.is_empty() {
-                strings.no_device.to_owned()
-            } else {
-                let lines: Vec<String> = devices
-                    .iter()
-                    .map(|d| {
-                        let status = match d.reading {
-                            Reading::Battery { percent, charging } => {
-                                strings.battery_line(percent, charging)
+        let needs_menu = self.rebuild_pending
+            || self
+                .menu
+                .as_ref()
+                .is_none_or(|m| m.devices != snapshot.devices.len());
+        let needs_icons = needs_menu || self.icons.len() != faces.len();
+        if self.menu_open && needs_icons {
+            self.rebuild_pending = true;
+        } else {
+            if needs_menu {
+                self.menu = Some(self.build_menu(snapshot.devices.len()));
+                self.rebuild_pending = false;
+                // Each icon holds its own handle to the menu, so all are replaced with it.
+                self.icons.clear();
+            } else if needs_icons {
+                self.icons.clear();
+            }
+            let menu = &self.menu.as_ref().expect("built above").menu;
+            for (i, (face, tip)) in faces.iter().enumerate() {
+                let image = icon::render(*face, self.look.dpi, self.look.light);
+                match self.icons.get(i) {
+                    Some(tray) => {
+                        let _ = tray.set_icon(Some(image));
+                        let _ = tray.set_tooltip(Some(tip));
+                    }
+                    None => {
+                        let built = TrayIconBuilder::new()
+                            .with_icon(image)
+                            .with_tooltip(tip)
+                            .with_menu(Box::new(menu.clone()))
+                            .with_menu_on_left_click(false)
+                            .build();
+                        match built {
+                            Ok(tray) => self.icons.push(tray),
+                            // The shell refuses icons until the taskbar exists, as at
+                            // sign-in; the look-check timer tries again.
+                            Err(_) => {
+                                self.icons.clear();
+                                return;
                             }
-                            Reading::Asleep => strings.asleep.to_owned(),
-                        };
-                        format!("{}\n{status}", device_label(strings, d))
-                    })
-                    .collect();
-                format!("{}\n{}", lines.join("\n"), strings.updated_at(&time))
-            };
-            match self.icons.get(i) {
-                Some(tray) => {
-                    let _ = tray.set_icon(Some(image));
-                    let _ = tray.set_tooltip(Some(&tooltip));
-                    tray.set_menu(Some(Box::new(menu.clone())));
-                }
-                None => {
-                    let built = TrayIconBuilder::new()
-                        .with_icon(image)
-                        .with_tooltip(&tooltip)
-                        .with_menu(Box::new(menu.clone()))
-                        .with_menu_on_left_click(false)
-                        .build();
-                    match built {
-                        Ok(tray) => self.icons.push(tray),
-                        // The shell refuses icons until the taskbar exists, as at sign-in;
-                        // the look-check timer tries again.
-                        Err(_) => {
-                            self.icons.clear();
-                            return;
                         }
                     }
                 }
             }
+        }
+        self.sync_menu();
+    }
+
+    /// Updates the menu's check marks and device rows in place, so an open menu shows the
+    /// change immediately.
+    fn sync_menu(&self) {
+        let (Some(items), Some(snapshot)) = (&self.menu, &self.snapshot) else {
+            return;
+        };
+        if items.devices != snapshot.devices.len() {
+            return;
+        }
+        let t = self.strings();
+        let s = &self.settings;
+        for (row, device) in items.rows.iter().zip(&snapshot.devices) {
+            row.set_text(row_text(t, device));
+        }
+        for (p, item) in &items.low {
+            item.set_checked(s.low_threshold == *p);
+        }
+        for (secs, item) in &items.intervals {
+            item.set_checked(s.interval_secs == *secs);
+        }
+        items.icons_each.set_checked(!s.merged_icon);
+        items.icons_merged.set_checked(s.merged_icon);
+        items.full.set_checked(s.full_alert);
+        items.autostart.set_checked(system::autostart_enabled());
+        for (language, item) in &items.languages {
+            item.set_checked(s.language == *language);
+        }
+        items.log.set_checked(s.battery_log);
+        if self.menu_open {
+            repaint_menus();
         }
     }
 
@@ -312,11 +489,61 @@ impl Tray {
         }
     }
 
-    fn menu(&self, snapshot: &Snapshot) -> Menu {
+    /// A menu for `devices` devices; check marks and row text are filled in by `sync_menu`.
+    fn build_menu(&self, devices: usize) -> MenuItems {
         let t = self.strings();
         let menu = Menu::new();
+        let check = |id: String, text: &str| CheckMenuItem::with_id(id, text, true, false, None);
+        let low: Vec<(u8, CheckMenuItem)> = THRESHOLDS
+            .iter()
+            .map(|&p| {
+                let text = if p == 0 {
+                    t.off.to_owned()
+                } else {
+                    format!("{p}%")
+                };
+                (p, check(format!("low:{p}"), &text))
+            })
+            .collect();
+        let intervals: Vec<(u64, CheckMenuItem)> = INTERVALS
+            .iter()
+            .map(|&secs| {
+                (
+                    secs,
+                    check(format!("interval:{secs}"), &t.interval_label(secs)),
+                )
+            })
+            .collect();
+        // Language names stay in their own language so either can be found.
+        let languages: Vec<(Language, CheckMenuItem)> = LANGUAGES
+            .iter()
+            .map(|&(language, code)| {
+                let text = match language {
+                    Language::System => t.follow_system,
+                    Language::English => "English",
+                    Language::Chinese => "简体中文",
+                };
+                (language, check(format!("language:{code}"), text))
+            })
+            .collect();
+        let items = MenuItems {
+            menu: menu.clone(),
+            devices,
+            rows: (0..devices)
+                .map(|i| MenuItem::with_id(format!("device:{i}"), "", true, None))
+                .collect(),
+            low,
+            intervals,
+            icons_each: check("icons:each".to_owned(), t.icons_each),
+            icons_merged: check("icons:merged".to_owned(), t.icons_merged),
+            full: check("full".to_owned(), t.full_alert),
+            autostart: check("autostart".to_owned(), t.autostart),
+            languages,
+            log: check("log".to_owned(), t.battery_log),
+        };
+
         let quit = MenuItem::with_id("quit", t.quit, true, None);
-        if snapshot.devices.is_empty() {
+        if devices == 0 {
             append(
                 &menu,
                 &[
@@ -326,92 +553,31 @@ impl Tray {
                     &quit,
                 ],
             );
-            return menu;
+            return items;
         }
-
-        for (i, device) in snapshot.devices.iter().enumerate() {
-            let right = match device.reading {
-                Reading::Battery { percent, charging } => t.row_status(percent, charging),
-                Reading::Asleep => t.no_response.to_owned(),
-            };
-            let row = format!("{}\t{right}", device_label(t, device));
-            append(
-                &menu,
-                &[&MenuItem::with_id(format!("device:{i}"), row, true, None)],
-            );
+        for row in &items.rows {
+            append(&menu, &[row]);
         }
-
-        let s = &self.settings;
-        let radio = |id: String, text: &str, checked: bool| {
-            CheckMenuItem::with_id(id, text, true, checked, None)
-        };
-        let low: Vec<CheckMenuItem> = THRESHOLDS
-            .iter()
-            .map(|&p| {
-                let text = if p == 0 {
-                    t.off.to_owned()
-                } else {
-                    format!("{p}%")
-                };
-                radio(format!("low:{p}"), &text, s.low_threshold == p)
-            })
-            .collect();
-        let intervals: Vec<CheckMenuItem> = INTERVALS
-            .iter()
-            .map(|&secs| {
-                let text = t.interval_label(secs);
-                radio(format!("interval:{secs}"), &text, s.interval_secs == secs)
-            })
-            .collect();
-        let icons = [
-            radio("icons:each".to_owned(), t.icons_each, !s.merged_icon),
-            radio("icons:merged".to_owned(), t.icons_merged, s.merged_icon),
-        ];
-        // Language names stay in their own language so either can be found.
-        let languages = [
-            radio(
-                "language:system".to_owned(),
-                t.follow_system,
-                s.language == Language::System,
-            ),
-            radio(
-                "language:en".to_owned(),
-                "English",
-                s.language == Language::English,
-            ),
-            radio(
-                "language:zh-CN".to_owned(),
-                "简体中文",
-                s.language == Language::Chinese,
-            ),
-        ];
         let version = env!("CARGO_PKG_VERSION");
-
         append(
             &menu,
             &[
                 &PredefinedMenuItem::separator(),
                 &MenuItem::with_id("refresh", t.refresh, true, None),
                 &PredefinedMenuItem::separator(),
-                &submenu(t.low_alert, &low),
-                &submenu(t.interval, &intervals),
-                &submenu(t.icons, &icons),
-                &CheckMenuItem::with_id("full", t.full_alert, true, s.full_alert, None),
-                &CheckMenuItem::with_id(
-                    "autostart",
-                    t.autostart,
-                    true,
-                    system::autostart_enabled(),
-                    None,
-                ),
-                &submenu(t.language, &languages),
-                &CheckMenuItem::with_id("log", t.battery_log, true, s.battery_log, None),
+                &submenu(t.low_alert, items.low.iter().map(|(_, i)| i)),
+                &submenu(t.interval, items.intervals.iter().map(|(_, i)| i)),
+                &submenu(t.icons, [&items.icons_each, &items.icons_merged]),
+                &items.full,
+                &items.autostart,
+                &submenu(t.language, items.languages.iter().map(|(_, i)| i)),
+                &items.log,
                 &PredefinedMenuItem::separator(),
                 &MenuItem::with_id("about", format!("{}\tv{version}", t.about), true, None),
                 &quit,
             ],
         );
-        menu
+        items
     }
 }
 
@@ -419,8 +585,8 @@ fn append(menu: &Menu, items: &[&dyn IsMenuItem]) {
     menu.append_items(items).expect("menu items are new");
 }
 
-fn submenu(text: &str, items: &[CheckMenuItem]) -> Submenu {
-    let items: Vec<&dyn IsMenuItem> = items.iter().map(|i| i as &dyn IsMenuItem).collect();
+fn submenu<'a>(text: &str, items: impl IntoIterator<Item = &'a CheckMenuItem>) -> Submenu {
+    let items: Vec<&dyn IsMenuItem> = items.into_iter().map(|i| i as &dyn IsMenuItem).collect();
     Submenu::with_items(text, true, &items).expect("menu items are new")
 }
 
@@ -430,6 +596,42 @@ fn device_label(strings: &Strings, device: &DeviceStatus) -> String {
         device.name,
         strings.connection(device.connection)
     )
+}
+
+fn row_text(strings: &Strings, device: &DeviceStatus) -> String {
+    let right = match device.reading {
+        Reading::Battery { percent, charging } => strings.row_status(percent, charging),
+        Reading::Asleep => strings.no_response.to_owned(),
+    };
+    format!("{}\t{right}", device_label(strings, device))
+}
+
+fn tooltip(strings: &Strings, devices: &[&DeviceStatus], time: &str) -> String {
+    let lines: Vec<String> = devices
+        .iter()
+        .map(|d| {
+            let status = match d.reading {
+                Reading::Battery { percent, charging } => strings.battery_line(percent, charging),
+                Reading::Asleep => strings.asleep.to_owned(),
+            };
+            format!("{}\n{status}", device_label(strings, d))
+        })
+        .collect();
+    format!("{}\n{}", lines.join("\n"), strings.updated_at(time))
+}
+
+/// Repaints this thread's open menu windows after their items changed underneath them.
+fn repaint_menus() {
+    unsafe extern "system" fn repaint(hwnd: HWND, _: LPARAM) -> i32 {
+        let mut class = [0u16; 8];
+        let len = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+        // "#32768" is the window class of every popup menu.
+        if class[..len as usize] == *"#32768".encode_utf16().collect::<Vec<_>>() {
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+        }
+        1
+    }
+    unsafe { EnumThreadWindows(GetCurrentThreadId(), Some(repaint), 0) };
 }
 
 fn open_url(url: &str) {

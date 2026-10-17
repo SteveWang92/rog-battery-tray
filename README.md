@@ -11,7 +11,8 @@ Armoury Crate and runs as a single portable `.exe`.
 - Every setting is in the right-click menu: refresh now, the low-battery threshold, the
   refresh interval, one icon per device or one merged icon showing the lowest level, a
   full-charge alert, starting with Windows, the language (English or Simplified Chinese)
-  and an optional battery log.
+  and an optional battery log. The menu stays open while settings are changed and closes
+  on a click outside it.
 - A Windows notification appears once when a device drops to the low-battery threshold,
   and again only after it has been charged. The full-charge notification is off by
   default.
@@ -19,11 +20,14 @@ Armoury Crate and runs as a single portable `.exe`.
 
 ## Supported devices
 
-| Device | Connection | USB ID | Status |
-| --- | --- | --- | --- |
-| ROG Azoth | ROG OMNI receiver | `0B05:1ACE` | Tested |
-| ROG Azoth | Azoth 2.4 GHz receiver | `0B05:1A85` | Untested |
-| ROG Azoth | USB cable | `0B05:1A83` | Untested |
+Each cell shows the USB ID the device appears as over that connection, and its status:
+![Tested](https://img.shields.io/badge/Tested-2ea44f) on real hardware,
+![Untested](https://img.shields.io/badge/Untested-dfb317) implemented but not yet tried, or
+![Not supported](https://img.shields.io/badge/Not%20supported-9e9e9e).
+
+| Model | ROG OMNI receiver | Own 2.4 GHz receiver | USB cable | Bluetooth |
+| --- | --- | --- | --- | --- |
+| ROG Azoth | ![0B05:1ACE Tested](https://img.shields.io/badge/0B05%3A1ACE-Tested-2ea44f) | ![0B05:1A85 Untested](https://img.shields.io/badge/0B05%3A1A85-Untested-dfb317) | ![0B05:1A83 Untested](https://img.shields.io/badge/0B05%3A1A83-Untested-dfb317) | ![Not supported](https://img.shields.io/badge/Not%20supported-9e9e9e) |
 
 A report from an untested device, working or not, is welcome as an issue.
 
@@ -41,7 +45,8 @@ switched on from the menu, is written to `%LOCALAPPDATA%\rog-battery-tray\batter
 On first run the program adds itself to the current user's startup programs
 (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`); switching off "Start with Windows"
 removes that entry. To show notifications under its own name it registers
-`HKCU\Software\Classes\AppUserModelId\rog-battery-tray`. Nothing else is written.
+`HKCU\Software\Classes\AppUserModelId\rog-battery-tray` and keeps the notification icon in
+`%LOCALAPPDATA%\rog-battery-tray\icon.ico`. Nothing else is written.
 
 ## Building
 

@@ -13,6 +13,8 @@ on `main`, with the matching section below as its notes.
 - Tray icon per device showing battery digits, coloured when low or charging.
 - Tooltip with device, battery, charging state and last update time.
 - Right-click menu for refresh, low-battery threshold, refresh interval and merged icon.
+- The menu stays open while changing settings until clicked outside.
+- Application icon in Explorer, Task Manager and notifications.
 - Optional battery log, switched on from the tray menu.
 - Toasts when a device runs low and, optionally, when charging completes.
 - Settings are saved and restored across restarts.

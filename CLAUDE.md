@@ -47,7 +47,14 @@ Armoury Crate. It is a Cargo workspace:
 
 - Battery is shown only through the tray icon, its native tooltip, the native right-click
   menu and Windows toasts. There is no main window or settings window.
-- Icons are rendered at runtime for the taskbar's DPI and theme; no icon image files.
+- Icons are drawn in code, never stored as image files: tray icons at runtime for the
+  taskbar's DPI and theme (`icon.rs`), the application icon from `app_icon.rs`, which
+  `build.rs` embeds in the executable with its version information and the tray writes out
+  for toasts.
+- Native menus close after a click. A `WH_MSGFILTER` hook in `tray.rs` forwards a click on
+  a command item as its `WM_COMMAND` and swallows it, so the menu stays open; menu items
+  are therefore updated in place while it shows, and anything that replaces the menu or
+  an icon waits until it closes.
 - HID queries run on the poller thread, never on the thread that owns the tray.
 - Settings live in `%APPDATA%\rog-battery-tray\config.toml`. The file may be edited by
   hand, so it is validated on load; an invalid file means defaults plus one toast, and the

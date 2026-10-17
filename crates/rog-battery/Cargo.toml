@@ -1,0 +1,7 @@
+[package]
+name = "rog-battery"
+version = "0.0.0"
+description = "Battery queries for ASUS ROG wireless peripherals over HID"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true

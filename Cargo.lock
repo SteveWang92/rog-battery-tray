@@ -915,14 +915,14 @@ dependencies = [
 
 [[package]]
 name = "rog-battery"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "hidapi",
 ]
 
 [[package]]
 name = "rog-battery-tray"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "embed-resource",

@@ -3,6 +3,9 @@
 A lightweight Windows tray battery monitor for ASUS ROG wireless keyboards and mice. It
 needs no Armoury Crate and runs as a single portable `.exe`.
 
+This is an independent project, not affiliated with or endorsed by ASUS. ASUS and ROG are
+trademarks of ASUSTeK Computer Inc.
+
 - The tray icon shows the battery percentage as digits, drawn for the taskbar's scale and
   theme. A low battery shows on an orange-red fill and charging on a green fill. A device
   that falls asleep keeps its last reading in grey, or shows a grey empty battery if it
@@ -72,6 +75,19 @@ known for that connection.
 
 A report from an untested device, working or not, is welcome as an issue.
 
+## Download
+
+Requires 64-bit Windows 10 or 11. Download `rog-battery-tray.exe` from the
+[latest release](https://github.com/SteveWang92/rog-battery-tray/releases/latest), put it
+in a folder it can stay in, and run it. There is no installer.
+
+The executable is unsigned, so Microsoft Defender SmartScreen may warn that it is an
+unrecognized app; choose **More info**, then **Run anyway**, after checking that the
+download came from this repository.
+
+To update, quit the running copy from its menu and replace the file with the new one at the
+same path; settings and "Start with Windows" carry over.
+
 ## Usage
 
 Run `rog-battery-tray.exe`. Only one copy runs at a time.
@@ -89,6 +105,14 @@ removes that entry. To show notifications under its own name it registers
 `HKCU\Software\Classes\AppUserModelId\rog-battery-tray` and keeps the notification icon in
 `%LOCALAPPDATA%\rog-battery-tray\icon.ico`. If the program ever fails, the error is recorded
 in `crash.log` in the same folder. Nothing else is written.
+
+## Uninstalling
+
+1. Switch off "Start with Windows" in the menu, then choose "Exit".
+2. Delete `rog-battery-tray.exe` and the folders `%APPDATA%\rog-battery-tray` and
+   `%LOCALAPPDATA%\rog-battery-tray`.
+3. Optionally remove the notification registration from PowerShell:
+   `Remove-Item HKCU:\Software\Classes\AppUserModelId\rog-battery-tray`.
 
 ## Building
 

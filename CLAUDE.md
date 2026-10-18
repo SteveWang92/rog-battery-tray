@@ -89,6 +89,9 @@ Armoury Crate. It is a Cargo workspace:
 - Releases are cut with [changedeck](https://github.com/SteveWang92/changedeck)
   (`prep`, `reversion`, `ship`), configured by `changedeck.json`, which lists every file
   that carries the version. A new crate's `Cargo.toml` and `Cargo.lock` entry go there.
+- Publishing a release runs `.github/workflows/release.yml`, which builds
+  `rog-battery-tray.exe` from the tag and attaches it under that unversioned name, so an
+  update replaced at the same path keeps its autostart entry.
 - Record each user-facing change under `## [Unreleased]` in `CHANGELOG.md` in the same
   commit that makes it.
 - Only the maintainer releases.

@@ -1,5 +1,8 @@
 # rog-battery-tray
 
+> **Archived.** Continued as [peripheral-battery-tray](https://github.com/SteveWang92/peripheral-battery-tray),
+> which monitors ASUS ROG and Logitech devices.
+
 A lightweight Windows tray battery monitor for ASUS ROG wireless keyboards and mice. It
 needs no Armoury Crate and runs as a single portable `.exe`.
 

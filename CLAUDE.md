@@ -19,8 +19,6 @@ Armoury Crate. It is a Cargo workspace:
 - Planned work and progress live in the maintainer's untracked `PLAN.local.md`, not in
   GitHub issues. Read it before starting work when it is present; do not open issues for
   planned work.
-- The repository stays private until every milestone has been tested. Only the maintainer
-  decides when it becomes public; never change its visibility.
 
 ## Device rules
 

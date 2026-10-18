@@ -239,7 +239,7 @@ impl Glyphs {
             TextOutW(dc, margin, margin, wide.as_ptr(), wide.len() as i32);
             GdiFlush();
             // White text on black: any channel is the coverage.
-            for (cell, pixel) in full.iter_mut().zip(pixels.chunks_exact(4)) {
+            for (cell, pixel) in full.iter_mut().zip(pixels.as_chunks::<4>().0) {
                 *cell = pixel[0];
             }
             SelectObject(dc, old_font);

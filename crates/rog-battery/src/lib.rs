@@ -511,7 +511,9 @@ fn omni_devices(api: &HidApi, paired_info: &DeviceInfo, asus: &[&DeviceInfo]) ->
     };
     let receiver = instance(paired_info.path());
     reply[5..]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|slot| u16::from_le_bytes([slot[0], slot[1]]))
         .take_while(|&pid| pid != 0)
         .filter_map(|pid| {

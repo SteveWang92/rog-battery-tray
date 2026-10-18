@@ -77,7 +77,9 @@ Armoury Crate. It is a Cargo workspace:
 - Autostart is the per-user `Run` registry value, the single source of truth for that
   setting; it is not duplicated in the config file. A value pointing at another copy's
   path counts as off.
-- Every user-facing string lives in `strings.rs`, in English and Simplified Chinese.
+- Every string the tray shows lives in `strings.rs`, in English and Simplified Chinese,
+  except the language names, each written in its own language, and the program's name.
+  The `--once` output and its errors are English only.
 - The battery log is diagnostic: off by default, switched from the menu, written to
   `%LOCALAPPDATA%\rog-battery-tray\battery.log`.
 

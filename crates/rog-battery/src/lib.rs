@@ -26,7 +26,7 @@ const OMNI_PAIRED: [u8; 3] = [0x01, 0xA0, 0x00];
 const OMNI_PAIRED_COLLECTION: &str = "col01";
 
 /// How a device reaches the computer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Connection {
     OmniReceiver,
     Receiver,
@@ -160,6 +160,8 @@ const fn model(
 
 use Connection::{OmniReceiver as Omni, Receiver, Wired};
 
+/// Every model the protocol facts cover. Only the ROG Azoth over the OMNI receiver is
+/// tested on real hardware; every other entry is untested.
 const MODELS: &[Model] = &[
     // Keyboards
     model(0x1A85, "ROG Azoth", Omni, KEYBOARD_OMNI, KEYBOARD),
@@ -492,6 +494,9 @@ pub fn discover(api: &HidApi) -> Vec<Device> {
             });
         }
     }
+    // HID enumeration order can change after a replug; callers that show one entry per
+    // device get the same order every time.
+    devices.sort_by_key(|device| (device.name, device.model.connection));
     devices
 }
 

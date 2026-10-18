@@ -2,7 +2,7 @@
 //! shows, the right-click menu that holds every setting, and the battery toasts.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
@@ -479,6 +479,14 @@ impl Tray {
 
     fn raise_alerts(&mut self, snapshot: &Snapshot) {
         let strings = self.strings();
+        // A model charging under any connection is charging under all of them; otherwise its
+        // receiver entry would raise the low toast the cable entry re-arms, every round.
+        let charging_models: HashSet<&str> = snapshot
+            .devices
+            .iter()
+            .filter(|d| matches!(d.reading, Reading::Battery { charging: true, .. }))
+            .map(|d| d.name)
+            .collect();
         for device in &snapshot.devices {
             let Reading::Battery { percent, charging } = device.reading else {
                 continue;
@@ -487,7 +495,7 @@ impl Tray {
                 low_armed: true,
                 full_pending: false,
             });
-            if charging {
+            if charging_models.contains(device.name) {
                 alerts.low_armed = true;
             } else if alerts.low_armed
                 && self.settings.low_threshold().is_some_and(|t| percent <= t)

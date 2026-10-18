@@ -83,18 +83,29 @@ Armoury Crate. It is a Cargo workspace:
 - The battery log is diagnostic: off by default, switched from the menu, written to
   `%LOCALAPPDATA%\rog-battery-tray\battery.log`.
 
-## Releases
+## Development
 
-- Work lands on `dev`; `main` only receives releases.
-- Releases are cut with [changedeck](https://github.com/SteveWang92/changedeck)
-  (`prep`, `reversion`, `ship`), configured by `changedeck.json`, which lists every file
-  that carries the version. A new crate's `Cargo.toml` and `Cargo.lock` entry go there.
-- Publishing a release runs `.github/workflows/release.yml`, which builds
-  `rog-battery-tray.exe` from the tag and attaches it under that unversioned name, so an
-  update replaced at the same path keeps its autostart entry.
+- `dev` is the default branch and receives all work; `main` receives only releases.
+- A contribution is a pull request into `dev`. CI (`.github/workflows/ci.yml`) runs the
+  [checks](#checks) on it, and the maintainer squash-merges it under one Conventional
+  Commit title (`feat:`, `fix:`, `refactor:`, `chore:`, `build:`, `docs:`).
 - Record each user-facing change under `## [Unreleased]` in `CHANGELOG.md` in the same
   commit that makes it.
-- Only the maintainer releases.
+
+## Releases
+
+Only the maintainer releases, with [changedeck](https://github.com/SteveWang92/changedeck):
+
+1. `changedeck prep` sets the version in every file `changedeck.json` lists (a new crate's
+   `Cargo.toml` and `Cargo.lock` entry go there), dates the changelog section, pushes
+   `dev` and opens the `dev` → `main` release pull request.
+2. The release pull request is reviewed and CI passes on it; fixes are ordinary commits on
+   `dev`, then `prep` again. `changedeck reversion X.Y.Z` changes the prepared version.
+3. `changedeck ship` merges it with a merge commit, tags `vX.Y.Z` on `main`, publishes the
+   GitHub release and fast-forwards `dev`.
+4. Publishing the release runs `.github/workflows/release.yml`, which builds
+   `rog-battery-tray.exe` from the tag and attaches it under that unversioned name, so an
+   update replaced at the same path keeps its autostart entry.
 
 ## Checks
 

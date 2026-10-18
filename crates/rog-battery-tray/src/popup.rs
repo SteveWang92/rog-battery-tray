@@ -412,8 +412,14 @@ fn place(hwnd: HWND) {
     } else {
         anchor.y - gap - height
     };
-    let x = x.clamp(work.left + gap, (work.right - gap - width).max(work.left));
-    let y = y.clamp(work.top + gap, (work.bottom - gap - height).max(work.top));
+    let x = x.clamp(
+        work.left + gap,
+        (work.right - gap - width).max(work.left + gap),
+    );
+    let y = y.clamp(
+        work.top + gap,
+        (work.bottom - gap - height).max(work.top + gap),
+    );
     if unsafe { IsWindowVisible(hwnd) } != 0 {
         unsafe { SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW) };
         return;

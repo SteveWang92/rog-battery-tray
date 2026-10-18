@@ -125,15 +125,7 @@ impl Poller {
             let elapsed = started.elapsed().as_millis();
             let (name, connection) = (device.name(), device.connection());
             let text = match &result {
-                Ok(Reading::Battery { percent, charging }) => {
-                    let state = if *charging {
-                        "charging"
-                    } else {
-                        "not charging"
-                    };
-                    format!("{percent}%, {state}")
-                }
-                Ok(Reading::Asleep) => "asleep or not responding".to_owned(),
+                Ok(reading) => reading.to_string(),
                 Err(error) => format!("query failed: {error}"),
             };
             self.log_line(&format!("{name} ({connection}): {text}  [{elapsed} ms]"));

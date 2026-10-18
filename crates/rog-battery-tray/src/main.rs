@@ -13,7 +13,7 @@ mod tray;
 
 use std::process::ExitCode;
 
-use rog_battery::{HidApi, Reading};
+use rog_battery::HidApi;
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -97,11 +97,7 @@ fn print_once() -> ExitCode {
     }
     for device in devices {
         let status = match device.read_battery(&api) {
-            Ok(Reading::Battery { percent, charging }) => {
-                let state = if charging { "charging" } else { "not charging" };
-                format!("{percent}%, {state}")
-            }
-            Ok(Reading::Asleep) => "asleep or not responding".to_owned(),
+            Ok(reading) => reading.to_string(),
             Err(error) => format!("query failed: {error}"),
         };
         println!("{} ({}): {status}", device.name(), device.connection());

@@ -141,12 +141,16 @@ struct Tray {
     commands: mpsc::Sender<Command>,
     inbox: Receiver<Snapshot>,
     snapshot: Option<Snapshot>,
+    /// Every icon created this run; the first `shown` are visible and the rest hidden.
     icons: Vec<TrayIcon>,
+    shown: usize,
     /// What each icon's card shows, by icon position.
     cards: Vec<Card>,
     menu: Option<MenuItems>,
     look: Look,
-    alerts: HashMap<(&'static str, Connection), Alerts>,
+    /// Alert state per model: a device charging over its cable appears under another
+    /// connection than the receiver it drains on.
+    alerts: HashMap<&'static str, Alerts>,
     /// Each device's last battery reading and when it was taken.
     last_read: HashMap<(&'static str, Connection), (u8, DateTime<Local>)>,
     /// Set while a menu is showing: the menu and the icons it belongs to cannot be replaced
@@ -202,6 +206,7 @@ pub fn run(api: HidApi) {
         inbox,
         snapshot: None,
         icons: Vec::new(),
+        shown: 0,
         cards: Vec::new(),
         menu: None,
         look,
@@ -367,9 +372,7 @@ impl Tray {
                 }
                 self.look = look;
                 self.refresh();
-            } else if self.icons.is_empty() || self.rebuild_pending {
-                // Icons the shell refused earlier are retried here rather than a whole poll
-                // interval later.
+            } else if self.rebuild_pending {
                 self.refresh();
             }
         } else if self.rebuild_pending {
@@ -480,13 +483,10 @@ impl Tray {
             let Reading::Battery { percent, charging } = device.reading else {
                 continue;
             };
-            let alerts = self
-                .alerts
-                .entry((device.name, device.connection))
-                .or_insert(Alerts {
-                    low_armed: true,
-                    full_pending: false,
-                });
+            let alerts = self.alerts.entry(device.name).or_insert(Alerts {
+                low_armed: true,
+                full_pending: false,
+            });
             if charging {
                 alerts.low_armed = true;
             } else if alerts.low_armed
@@ -558,7 +558,7 @@ impl Tray {
         // Neither the menu nor the set of icons can change under an open menu. Icons are
         // never replaced either: the shell knows an icon by its window and number, and
         // remembers its "always show" setting under them, so a new icon is a new entry.
-        let reshape = needs_menu || self.icons.len() != faces.len();
+        let reshape = needs_menu || self.shown != faces.len();
         if self.menu_open && reshape {
             self.rebuild_pending = true;
         } else if needs_menu {
@@ -571,8 +571,15 @@ impl Tray {
             self.menu = Some(items);
             self.rebuild_pending = false;
         }
+        // Icons beyond the faces are hidden rather than dropped, so one that is needed again
+        // comes back under its old number.
         if !self.menu_open {
-            self.icons.truncate(faces.len());
+            for (slot, tray) in self.icons.iter().enumerate() {
+                if (slot < faces.len()) != (slot < self.shown) {
+                    let _ = tray.set_visible(slot < faces.len());
+                }
+            }
+            self.shown = faces.len().min(self.icons.len());
         }
         for (slot, (face, _)) in faces.iter().enumerate() {
             let image = icon::render(*face, self.look.dpi, self.look.light);
@@ -590,9 +597,12 @@ impl Tray {
                 .with_menu_on_left_click(false)
                 .build();
             match built {
-                Ok(tray) => self.icons.push(tray),
-                // The shell refuses icons until the taskbar exists, as at sign-in; the
-                // look-check timer tries again.
+                Ok(tray) => {
+                    self.icons.push(tray);
+                    self.shown += 1;
+                }
+                // Only creating the icon's window fails here; an icon the shell is not
+                // ready for is added by tray-icon once the taskbar announces itself.
                 Err(_) => break,
             }
         }

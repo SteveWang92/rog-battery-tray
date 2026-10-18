@@ -62,7 +62,9 @@ pub fn load() -> Loaded {
         Err(_) => return Loaded::Invalid,
     };
     match toml::from_str::<Settings>(&text) {
-        Ok(settings) if settings.low_threshold < 100 && settings.interval_secs >= 5 => {
+        Ok(settings)
+            if settings.low_threshold < 100 && (5..=86_400).contains(&settings.interval_secs) =>
+        {
             Loaded::Saved(settings)
         }
         _ => Loaded::Invalid,

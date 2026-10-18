@@ -410,6 +410,22 @@ pub enum Reading {
     Asleep,
 }
 
+impl fmt::Display for Reading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Reading::Battery { percent, charging } => {
+                let state = if *charging {
+                    "charging"
+                } else {
+                    "not charging"
+                };
+                write!(f, "{percent}%, {state}")
+            }
+            Reading::Asleep => f.write_str("asleep or not responding"),
+        }
+    }
+}
+
 impl Device {
     pub fn name(&self) -> &'static str {
         self.name
@@ -457,9 +473,7 @@ pub fn discover(api: &HidApi) -> Vec<Device> {
     let mut devices = Vec::new();
     for info in &asus {
         if info.product_id() == OMNI_PID {
-            if collection(info) == Some(OMNI_PAIRED_COLLECTION) {
-                devices.extend(omni_devices(api, info, &asus));
-            }
+            devices.extend(omni_devices(api, info, &asus));
             continue;
         }
         let Some(model) = MODELS.iter().find(|m| {
@@ -489,6 +503,9 @@ fn omni_devices(api: &HidApi, paired_info: &DeviceInfo, asus: &[&DeviceInfo]) ->
         report_id: OMNI_PAIRED[0],
         report_len: 64,
     };
+    if !matches(&paired_channel, paired_info) {
+        return Vec::new();
+    }
     let Ok(Some(reply)) = query(api, paired_info.path(), &paired_channel, OMNI_PAIRED) else {
         return Vec::new();
     };
